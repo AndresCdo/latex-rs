@@ -1,11 +1,11 @@
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::Path;
 
 use gtk::{prelude::*, HeaderBar, TextBuffer};
 
-pub fn set_title(header_bar: &HeaderBar, path: &PathBuf) {
+pub fn set_title(header_bar: &HeaderBar, path: &Path) {
     if let Some(file_name) = path.file_name() {
         let file_name: &str = &file_name.to_string_lossy();
         header_bar.set_title(Some(file_name));
@@ -25,8 +25,8 @@ pub fn buffer_to_string(buffer: &TextBuffer) -> String {
         .to_string()
 }
 
-pub fn open_file(filename: &PathBuf) -> String {
-    let file = File::open(&filename).expect("Couldn't open file");
+pub fn open_file(filename: &Path) -> String {
+    let file = File::open(filename).expect("Couldn't open file");
 
     let mut reader = BufReader::new(file);
     let mut contents = String::new();
@@ -35,7 +35,7 @@ pub fn open_file(filename: &PathBuf) -> String {
     contents
 }
 
-pub fn save_file(filename: &PathBuf, text_buffer: &TextBuffer) {
+pub fn save_file(filename: &Path, text_buffer: &TextBuffer) {
     let contents = buffer_to_string(text_buffer);
     let mut file = File::create(filename).expect("Couldn't save file");
     file.write_all(contents.as_bytes())
