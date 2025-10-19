@@ -1,9 +1,13 @@
-use webkit2gtk::WebViewExt;
 use preview::Preview;
 use utils::{buffer_to_string, open_file, save_file, set_title};
+use webkit2gtk::WebViewExt;
 
 use gio::prelude::*;
-use gtk::{prelude::*, Application, ApplicationWindow, Button, FileChooserDialog, ResponseType, Orientation, HeaderBar, Box as GtkBox, FileChooserAction, AboutDialog, TextBuffer, TextView};
+use gtk::{
+    prelude::*, AboutDialog, Application, ApplicationWindow, Box as GtkBox, Button,
+    FileChooserAction, FileChooserDialog, HeaderBar, Orientation, ResponseType, TextBuffer,
+    TextView,
+};
 
 mod preview;
 #[macro_use]
@@ -43,7 +47,8 @@ fn build_ui(application: &Application) {
     let editor_view = TextView::with_buffer(&text_buffer);
     editor_view.set_monospace(true);
 
-    let editor_scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+    let editor_scroll =
+        gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
     editor_scroll.add(&editor_view);
     editor_scroll.set_hexpand(true);
     editor_scroll.set_vexpand(true);
@@ -51,7 +56,8 @@ fn build_ui(application: &Application) {
     // Create web view for preview
     let web_view = webkit2gtk::WebView::new();
 
-    let preview_scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+    let preview_scroll =
+        gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
     preview_scroll.add(&web_view);
     preview_scroll.set_hexpand(true);
     preview_scroll.set_vexpand(true);
@@ -65,19 +71,13 @@ fn build_ui(application: &Application) {
     window.add(&vbox);
 
     // File choosers
-    let file_open = FileChooserDialog::new(
-        Some("Open File"),
-        Some(&window),
-        FileChooserAction::Open,
-    );
+    let file_open =
+        FileChooserDialog::new(Some("Open File"), Some(&window), FileChooserAction::Open);
     file_open.add_button("Open", ResponseType::Ok);
     file_open.add_button("Cancel", ResponseType::Cancel);
 
-    let file_save = FileChooserDialog::new(
-        Some("Save File"),
-        Some(&window),
-        FileChooserAction::Save,
-    );
+    let file_save =
+        FileChooserDialog::new(Some("Save File"), Some(&window), FileChooserAction::Save);
     file_save.add_button("Save", ResponseType::Ok);
     file_save.add_button("Cancel", ResponseType::Cancel);
 
@@ -92,7 +92,7 @@ fn build_ui(application: &Application) {
 
     // Setup preview rendering
     let preview = Preview::new();
-    
+
     text_buffer.connect_changed(clone!(@strong web_view, preview => move |buffer| {
         let markdown = buffer_to_string(buffer);
         web_view.load_html(&preview.render(&markdown), None);
@@ -105,7 +105,7 @@ fn build_ui(application: &Application) {
         let header_bar_clone = header_bar.clone();
         let text_buffer_clone = text_buffer.clone();
         let window_clone = window.clone();
-        
+
         open_action.connect_activate(move |_, _| {
             file_open_clone.set_transient_for(Some(&window_clone));
             if file_open_clone.run() == ResponseType::Ok {
@@ -125,7 +125,7 @@ fn build_ui(application: &Application) {
         let file_save_clone = file_save.clone();
         let text_buffer_clone = text_buffer.clone();
         let window_clone = window.clone();
-        
+
         save_action.connect_activate(move |_, _| {
             file_save_clone.set_transient_for(Some(&window_clone));
             if file_save_clone.run() == ResponseType::Ok {

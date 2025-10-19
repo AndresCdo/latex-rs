@@ -19,7 +19,10 @@ pub fn set_title(header_bar: &HeaderBar, path: &PathBuf) {
 
 pub fn buffer_to_string(buffer: &TextBuffer) -> String {
     let (start, end) = buffer.bounds();
-    buffer.text(&start, &end, false).unwrap_or_default().to_string()
+    buffer
+        .text(&start, &end, false)
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub fn open_file(filename: &PathBuf) -> String {
@@ -65,4 +68,3 @@ macro_rules! clone {
         $($body)*
     };
 }
-
