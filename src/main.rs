@@ -164,7 +164,7 @@ fn build_ui(application: &Application) {
     let file_menu = gio::Menu::new();
     file_menu.append(Some("Open"), Some("app.open"));
     file_menu.append(Some("Save"), Some("app.save"));
-    file_menu.append(None, Some("app.quit"));
+    file_menu.append(Some("Quit"), Some("app.quit"));
 
     let help_menu = gio::Menu::new();
     help_menu.append(Some("About"), Some("app.about"));
