@@ -1,7 +1,7 @@
 name: Rust CI/CD
 
 # Build status: Known issue with glib 0.18.5 trait bounds on some Rust versions.
-# See: https://github.com/gtk-rs/gtk-rs-core/issues/...
+
 # Workaround: Beta channel is allowed to fail. Stable must pass.
 
 on:
