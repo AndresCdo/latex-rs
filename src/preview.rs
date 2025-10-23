@@ -1,13 +1,12 @@
-extern crate horrorshow;
 extern crate comrak;
+extern crate horrorshow;
 
-use self::horrorshow::{html, Raw};
+use self::comrak::{markdown_to_html, ComrakExtensionOptions, ComrakOptions, ComrakRenderOptions};
 use self::horrorshow::helper::doctype;
-use self::comrak::{markdown_to_html, ComrakOptions, ComrakExtensionOptions, ComrakRenderOptions};
+use self::horrorshow::{html, Raw};
 
 const GITHUB_CSS: &str = include_str!("github-markdown.css");
 const HIGHLIGHT_CSS: &str = include_str!("highlight.css");
-
 
 #[derive(Clone, Debug)]
 pub struct Preview<'a> {
