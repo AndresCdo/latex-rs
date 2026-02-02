@@ -2,21 +2,19 @@ mod api;
 mod preview;
 mod utils;
 
-use adw::prelude::*;
-use adw::{Application, ApplicationWindow, HeaderBar, WindowTitle};
-use gtk4::{
-    glib, ScrolledWindow, Paned, Orientation, FileDialog
-};
-use sourceview5::prelude::*;
-use sourceview5::{Buffer, View, LanguageManager};
-use webkit6::prelude::*;
-use webkit6::WebView;
-use std::rc::Rc;
-use std::path::PathBuf;
-use std::cell::RefCell;
 use crate::api::AiClient;
 use crate::preview::Preview;
 use crate::utils::{open_file, save_file};
+use adw::prelude::*;
+use adw::{Application, ApplicationWindow, HeaderBar, WindowTitle};
+use gtk4::{glib, FileDialog, Orientation, Paned, ScrolledWindow};
+use sourceview5::prelude::*;
+use sourceview5::{Buffer, LanguageManager, View};
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+use webkit6::prelude::*;
+use webkit6::WebView;
 
 const APP_ID: &str = "com.github.latex-rs";
 
@@ -28,13 +26,11 @@ async fn main() -> glib::ExitCode {
 
     // Initialize tracing for professional logging
     tracing_subscriber::fmt::init();
-    
-    let app = Application::builder()
-        .application_id(APP_ID)
-        .build();
+
+    let app = Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(build_ui);
-    
+
     app.run()
 }
 
@@ -62,7 +58,7 @@ fn build_ui(app: &Application) {
     let header_bar = HeaderBar::new();
     let view_title = WindowTitle::new("LaTeX.rs Editor", "");
     header_bar.set_title_widget(Some(&view_title));
-    
+
     let open_btn = gtk4::Button::with_label("Open");
     let save_btn = gtk4::Button::with_label("Save");
     let ai_btn = gtk4::Button::with_label("AI Assistant");
@@ -88,38 +84,49 @@ fn build_ui(app: &Application) {
     // Dependency check
     let missing_deps = crate::utils::check_dependencies();
     if !missing_deps.is_empty() {
-        let msg = format!("Missing dependencies: {}. Preview may not work.", missing_deps.join(", "));
+        let msg = format!(
+            "Missing dependencies: {}. Preview may not work.",
+            missing_deps.join(", ")
+        );
         toast_overlay.add_toast(adw::Toast::new(&msg));
         tracing::warn!(msg);
     }
 
     // AI Initialization Check
     let ctx = glib::MainContext::default();
-    ctx.spawn_local(glib::clone!(#[strong] state, #[weak] ai_btn, async move {
-        let models = ["qwen2.5-coder:3b", "llama3.2:3b", "llama3:8b", "mistral"];
-        let mut final_client = None;
+    ctx.spawn_local(glib::clone!(
+        #[strong]
+        state,
+        #[weak]
+        ai_btn,
+        async move {
+            let models = ["qwen2.5-coder:3b", "llama3.2:3b", "llama3:8b", "mistral"];
+            let mut final_client = None;
 
-        for model_name in models {
-            let client = AiClient::new(model_name).ok();
-            if let Some(c) = client {
-                if c.check_model().await.is_ok() {
-                    final_client = Some(c);
-                    break;
+            for model_name in models {
+                let client = AiClient::new(model_name).ok();
+                if let Some(c) = client {
+                    if c.check_model().await.is_ok() {
+                        final_client = Some(c);
+                        break;
+                    }
                 }
             }
-        }
 
-        if let Some(client) = final_client {
-            let model_name = client.model.clone();
-            state.borrow_mut().ai_client = Some(client);
-            ai_btn.set_sensitive(true);
-            ai_btn.set_tooltip_text(Some(&format!("AI ready (Model: {})", model_name)));
-            tracing::info!("AI Assistant initialized with model: {}", model_name);
-        } else {
-            ai_btn.set_tooltip_text(Some("Ollama not found or models missing. AI features disabled."));
-            tracing::warn!("AI Assistant could not be initialized.");
+            if let Some(client) = final_client {
+                let model_name = client.model.clone();
+                state.borrow_mut().ai_client = Some(client);
+                ai_btn.set_sensitive(true);
+                ai_btn.set_tooltip_text(Some(&format!("AI ready (Model: {})", model_name)));
+                tracing::info!("AI Assistant initialized with model: {}", model_name);
+            } else {
+                ai_btn.set_tooltip_text(Some(
+                    "Ollama not found or models missing. AI features disabled.",
+                ));
+                tracing::warn!("AI Assistant could not be initialized.");
+            }
         }
-    }));
+    ));
 
     // Editor & Preview
     let paned = Paned::new(Orientation::Horizontal);
@@ -139,7 +146,7 @@ fn build_ui(app: &Application) {
     editor_view.set_monospace(true);
     editor_view.set_show_line_numbers(true);
     editor_view.set_highlight_current_line(true);
-    
+
     let editor_scroll = ScrolledWindow::builder()
         .child(&editor_view)
         .hexpand(true)
@@ -160,84 +167,131 @@ fn build_ui(app: &Application) {
     let preview_gen = state.borrow().preview_generator.clone();
     let debounce_id = Rc::new(RefCell::new(None::<glib::SourceId>));
 
-    buffer.connect_changed(glib::clone!(#[weak] web_view, #[strong] debounce_id, move |buf| {
-        if let Some(source_id) = debounce_id.borrow_mut().take() {
-            // Safely remove the source - it may have already fired, which is OK
-            let _ = source_id.remove();
+    buffer.connect_changed(glib::clone!(
+        #[weak]
+        web_view,
+        #[strong]
+        debounce_id,
+        move |buf| {
+            if let Some(source_id) = debounce_id.borrow_mut().take() {
+                // Safely remove the source - it may have already fired, which is OK
+                let _ = source_id.remove();
+            }
+
+            let text = crate::utils::buffer_to_string(buf.upcast_ref());
+            let preview_gen = preview_gen.clone();
+
+            let debounce_id_clone = debounce_id.clone();
+            let source_id =
+                glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+                    // If this timer runs, it implies it wasn't cancelled.
+                    // We MUST clear the RefCell so subsequent keystrokes don't try to remove this already-dead source.
+                    *debounce_id_clone.borrow_mut() = None;
+
+                    let ctx = glib::MainContext::default();
+                    // Move blocking compilation out of the main thread
+                    ctx.spawn_local(async move {
+                        let html = tokio::task::spawn_blocking(move || preview_gen.render(&text))
+                            .await
+                            .unwrap_or_else(|e| format!("Render Task Error: {}", e));
+
+                        web_view.load_html(&html, None);
+                    });
+                });
+
+            *debounce_id.borrow_mut() = Some(source_id);
         }
-
-        let text = crate::utils::buffer_to_string(buf.upcast_ref());
-        let preview_gen = preview_gen.clone();
-        
-        let debounce_id_clone = debounce_id.clone();
-        let source_id = glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
-            // If this timer runs, it implies it wasn't cancelled.
-            // We MUST clear the RefCell so subsequent keystrokes don't try to remove this already-dead source.
-            *debounce_id_clone.borrow_mut() = None;
-
-            let ctx = glib::MainContext::default();
-            // Move blocking compilation out of the main thread
-            ctx.spawn_local(async move {
-                let html = tokio::task::spawn_blocking(move || {
-                    preview_gen.render(&text)
-                }).await.unwrap_or_else(|e| format!("Render Task Error: {}", e));
-                
-                web_view.load_html(&html, None);
-            });
-        });
-
-        *debounce_id.borrow_mut() = Some(source_id);
-    }));
+    ));
 
     // Logic: Open
-    open_btn.connect_clicked(glib::clone!(#[weak] window, #[weak] buffer, #[strong] state, #[weak] view_title, move |_| {
-        let dialog = FileDialog::builder()
-            .title("Open File")
-            .build();
+    open_btn.connect_clicked(glib::clone!(
+        #[weak]
+        window,
+        #[weak]
+        buffer,
+        #[strong]
+        state,
+        #[weak]
+        view_title,
+        move |_| {
+            let dialog = FileDialog::builder().title("Open File").build();
 
-        dialog.open(Some(&window), None::<&gio::Cancellable>, glib::clone!(#[strong] state, #[weak] buffer, #[weak] view_title, move |res| {
-            if let Ok(file) = res {
-                if let Some(path) = file.path() {
-                    if let Ok(content) = open_file(&path) {
-                        buffer.set_text(&content);
-                        state.borrow_mut().current_file = Some(path.to_path_buf());
-                        view_title.set_subtitle(&path.to_string_lossy());
-                    }
-                }
-            }
-        }));
-    }));
-
-    // Logic: Save
-    save_btn.connect_clicked(glib::clone!(#[weak] window, #[weak] buffer, #[strong] state, #[weak] view_title, move |_| {
-        let path_opt = state.borrow().current_file.clone();
-        if let Some(path) = path_opt {
-             if let Err(e) = save_file(&path, buffer.upcast_ref()) {
-                 tracing::error!("Failed to save: {}", e);
-             }
-        } else {
-            let dialog = FileDialog::builder()
-                .title("Save File")
-                .build();
-            
-            dialog.save(Some(&window), None::<&gio::Cancellable>, glib::clone!(#[strong] state, #[weak] buffer, #[weak] view_title, move |res| {
-                if let Ok(file) = res {
-                    if let Some(path) = file.path() {
-                        if save_file(&path, buffer.upcast_ref()).is_ok() {
-                            state.borrow_mut().current_file = Some(path.to_path_buf());
-                            view_title.set_subtitle(&path.to_string_lossy());
+            dialog.open(
+                Some(&window),
+                None::<&gio::Cancellable>,
+                glib::clone!(
+                    #[strong]
+                    state,
+                    #[weak]
+                    buffer,
+                    #[weak]
+                    view_title,
+                    move |res| {
+                        if let Ok(file) = res {
+                            if let Some(path) = file.path() {
+                                if let Ok(content) = open_file(&path) {
+                                    buffer.set_text(&content);
+                                    state.borrow_mut().current_file = Some(path.to_path_buf());
+                                    view_title.set_subtitle(&path.to_string_lossy());
+                                }
+                            }
                         }
                     }
-                }
-            }));
+                ),
+            );
         }
-    }));
+    ));
+
+    // Logic: Save
+    save_btn.connect_clicked(glib::clone!(
+        #[weak]
+        window,
+        #[weak]
+        buffer,
+        #[strong]
+        state,
+        #[weak]
+        view_title,
+        move |_| {
+            let path_opt = state.borrow().current_file.clone();
+            if let Some(path) = path_opt {
+                if let Err(e) = save_file(&path, buffer.upcast_ref()) {
+                    tracing::error!("Failed to save: {}", e);
+                }
+            } else {
+                let dialog = FileDialog::builder().title("Save File").build();
+
+                dialog.save(
+                    Some(&window),
+                    None::<&gio::Cancellable>,
+                    glib::clone!(
+                        #[strong]
+                        state,
+                        #[weak]
+                        buffer,
+                        #[weak]
+                        view_title,
+                        move |res| {
+                            if let Ok(file) = res {
+                                if let Some(path) = file.path() {
+                                    if save_file(&path, buffer.upcast_ref()).is_ok() {
+                                        state.borrow_mut().current_file = Some(path.to_path_buf());
+                                        view_title.set_subtitle(&path.to_string_lossy());
+                                    }
+                                }
+                            }
+                        }
+                    ),
+                );
+            }
+        }
+    ));
 
     // Logic: AI Assistant
     ai_btn.connect_clicked(glib::clone!(#[strong] state, #[weak] buffer, #[weak] ai_btn, #[weak] ai_spinner, #[weak] toast_overlay, move |_| {
         let text = crate::utils::buffer_to_string(buffer.upcast_ref());
         let client_opt = state.borrow().ai_client.clone();
-        
+
         if let Some(client) = client_opt {
             ai_btn.set_sensitive(false);
             ai_spinner.start();
@@ -245,7 +299,7 @@ fn build_ui(app: &Application) {
             let ctx = glib::MainContext::default();
             ctx.spawn_local(async move {
                 let is_empty = text.trim().is_empty();
-                
+
                 let mut current_prompt = if is_empty {
                     "SYSTEM: You are a LaTeX expert. \
                     \nUSER: Generate a professional LaTeX starter template. \
@@ -264,7 +318,7 @@ fn build_ui(app: &Application) {
                         \n2. Output the diff inside a markdown block: ```diff ... ```. \
                         \n3. DO NOT include any explanation. \
                         \n4. Start the diff with ---. \
-                        \n\nDocument:\n{}", 
+                        \n\nDocument:\n{}",
                         text
                     )
                 };
@@ -275,7 +329,7 @@ fn build_ui(app: &Application) {
 
                 while attempts < max_attempts {
                     attempts += 1;
-                    
+
                     if !is_empty && attempts == max_attempts {
                         current_prompt = format!(
                             "SYSTEM: The previous diff results were invalid. \

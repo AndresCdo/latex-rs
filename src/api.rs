@@ -39,10 +39,8 @@ pub struct AiClient {
 
 impl AiClient {
     pub fn new(model: &str) -> Result<Self, ApiError> {
-        let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()?;
-        
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+
         Ok(Self {
             client,
             model: model.to_string(),
@@ -50,25 +48,33 @@ impl AiClient {
     }
 
     pub async fn check_model(&self) -> Result<(), ApiError> {
-        let response = self.client
-            .get(OLLAMA_TAGS_URL)
-            .send()
-            .await?;
+        let response = self.client.get(OLLAMA_TAGS_URL).send().await?;
 
         if !response.status().is_success() {
-            return Err(ApiError::Response(format!("Ollama returned status {}", response.status())));
+            return Err(ApiError::Response(format!(
+                "Ollama returned status {}",
+                response.status()
+            )));
         }
 
         let tags: OllamaTags = response.json().await?;
-        if tags.models.iter().any(|m| m.name == self.model || m.name.starts_with(&format!("{}:", self.model))) {
+        if tags
+            .models
+            .iter()
+            .any(|m| m.name == self.model || m.name.starts_with(&format!("{}:", self.model)))
+        {
             Ok(())
         } else {
-            Err(ApiError::Response(format!("Model {} not found in Ollama", self.model)))
+            Err(ApiError::Response(format!(
+                "Model {} not found in Ollama",
+                self.model
+            )))
         }
     }
 
     pub async fn send_prompt(&self, prompt: &str) -> Result<String, ApiError> {
-        let response = self.client
+        let response = self
+            .client
             .post(OLLAMA_API_URL)
             .json(&json!({
                 "model": self.model,
@@ -79,7 +85,10 @@ impl AiClient {
             .await?;
 
         if !response.status().is_success() {
-            return Err(ApiError::Response(format!("Ollama returned status {}", response.status())));
+            return Err(ApiError::Response(format!(
+                "Ollama returned status {}",
+                response.status()
+            )));
         }
 
         let body: OllamaResponse = response.json().await?;

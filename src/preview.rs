@@ -1,8 +1,8 @@
-use std::process::Command;
-use std::fs;
-use tempfile::tempdir;
-use horrorshow::{html, Raw};
 use horrorshow::helper::doctype;
+use horrorshow::{html, Raw};
+use std::fs;
+use std::process::Command;
+use tempfile::tempdir;
 
 #[derive(Clone, Debug)]
 pub struct Preview;
@@ -42,12 +42,12 @@ impl Preview {
         let pdf_path = dir.path().join("doc.pdf");
         let log_path = dir.path().join("doc.log");
         let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "No log file found".to_string());
-        
+
         // If no PDF was generated, we MUST show the log or stderr to the user
         if !pdf_path.exists() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            
+
             return Err(format!(
                 "LaTeX failed to generate a PDF.\n\n--- LOG ---\n{}\n\n--- STDERR ---\n{}\n\n--- STDOUT ---\n{}",
                 log, stderr, stdout
@@ -61,13 +61,21 @@ impl Preview {
             .arg(&pdf_path)
             .arg(dir.path().join("output"))
             .output()
-            .map_err(|e| format!("Failed to run pdftocairo: {}. Is poppler-utils installed?", e))?;
-        
+            .map_err(|e| {
+                format!(
+                    "Failed to run pdftocairo: {}. Is poppler-utils installed?",
+                    e
+                )
+            })?;
+
         let cairo_stderr = String::from_utf8_lossy(&cairo_output.stderr);
         if !cairo_output.status.success() {
-            return Err(format!("pdftocairo failed to convert PDF to SVG.\n\nStderr:\n{}", cairo_stderr));
+            return Err(format!(
+                "pdftocairo failed to convert PDF to SVG.\n\nStderr:\n{}",
+                cairo_stderr
+            ));
         }
-        
+
         // Wait a small bit for files to be flushed to disk if needed (rare but possible on some FS)
         std::thread::sleep(std::time::Duration::from_millis(10));
 
@@ -75,24 +83,25 @@ impl Preview {
         // Check if output.svg exists directly (for single page output)
         let direct_output = dir.path().join("output.svg");
         if direct_output.exists() {
-             if let Ok(content) = fs::read_to_string(&direct_output) {
+            if let Ok(content) = fs::read_to_string(&direct_output) {
                 svgs.push(content);
-             }
+            }
         }
-        
+
         // Check for "output" without extension (user environment quirk)
         let weird_output = dir.path().join("output");
         if weird_output.exists() && weird_output.is_file() {
-             if let Ok(content) = fs::read_to_string(&weird_output) {
+            if let Ok(content) = fs::read_to_string(&weird_output) {
                 // If it really is an SVG, push it.
                 if content.contains("<svg") {
                     svgs.push(content);
                 }
-             }
+            }
         }
 
         // Look for output-*.svg files (multi-page only now)
-        let paths = fs::read_dir(dir.path()).map_err(|e| format!("Failed to read temp dir: {}", e))?;
+        let paths =
+            fs::read_dir(dir.path()).map_err(|e| format!("Failed to read temp dir: {}", e))?;
         let mut svg_paths: Vec<_> = paths
             .filter_map(|p| p.ok())
             .filter(|p| {
@@ -100,11 +109,12 @@ impl Preview {
                 name.starts_with("output-") && name.ends_with(".svg")
             })
             .collect();
-        
+
         // Sort by page number (output-1.svg, output-2.svg...)
         svg_paths.sort_by_key(|p| {
             let name = p.file_name().to_string_lossy().to_string();
-            let num: u32 = name.trim_start_matches("output-")
+            let num: u32 = name
+                .trim_start_matches("output-")
                 .trim_end_matches(".svg")
                 .parse()
                 .unwrap_or(0);
@@ -119,8 +129,9 @@ impl Preview {
 
         if svgs.is_empty() {
             let log_path = dir.path().join("doc.log");
-            let log = fs::read_to_string(log_path).unwrap_or_else(|_| "No log file found".to_string());
-            
+            let log =
+                fs::read_to_string(log_path).unwrap_or_else(|_| "No log file found".to_string());
+
             if log.contains("No pages of output") {
                 return Err("Document compiled but generated no pages. Ensure you have content between \\begin{document} and \\end{document}.".to_string());
             }
@@ -213,4 +224,3 @@ impl Preview {
         )
     }
 }
-
