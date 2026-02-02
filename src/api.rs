@@ -1,8 +1,23 @@
-use crate::constants::{AI_REQUEST_TIMEOUT, OLLAMA_API_URL, OLLAMA_TAGS_URL};
+use crate::constants::{AI_REQUEST_TIMEOUT, OLLAMA_BASE_URL};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
+
+/// AI Message roles
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    System,
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Message {
+    pub role: MessageRole,
+    pub content: String,
+}
 
 /// Errors that can occur when communicating with the Ollama API.
 #[derive(Error, Debug)]
@@ -16,8 +31,8 @@ pub enum ApiError {
 }
 
 #[derive(Deserialize)]
-struct OllamaResponse {
-    response: String,
+struct OllamaChatResponse {
+    message: Message,
 }
 
 #[derive(Deserialize)]
@@ -33,39 +48,31 @@ struct OllamaModel {
 /// Client for interacting with the local Ollama API.
 ///
 /// Provides methods to check model availability and send prompts for AI-assisted
-/// LaTeX editing.
+/// LaTeX editing using both professional chat and generation endpoints.
 #[derive(Clone)]
 pub struct AiClient {
     client: Client,
     /// The name of the AI model to use (e.g., "qwen3:0.6b")
     pub model: String,
+    base_url: String,
 }
 
 impl AiClient {
     /// Creates a new AI client configured to use the specified model.
-    ///
-    /// # Arguments
-    /// * `model` - The name of the Ollama model to use
-    ///
-    /// # Errors
-    /// Returns an error if the HTTP client cannot be built
     pub fn new(model: &str) -> Result<Self, ApiError> {
         let client = Client::builder().timeout(AI_REQUEST_TIMEOUT).build()?;
 
         Ok(Self {
             client,
             model: model.to_string(),
+            base_url: OLLAMA_BASE_URL.to_string(),
         })
     }
 
     /// Verifies that the configured model is available in Ollama.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - Cannot connect to Ollama
-    /// - The model is not found in the list of available models
     pub async fn check_model(&self) -> Result<(), ApiError> {
-        let response = self.client.get(OLLAMA_TAGS_URL).send().await?;
+        let url = format!("{}/api/tags", self.base_url);
+        let response = self.client.get(url).send().await?;
 
         if !response.status().is_success() {
             return Err(ApiError::Response(format!(
@@ -89,37 +96,37 @@ impl AiClient {
         }
     }
 
-    /// Sends a prompt to the AI model and returns the response.
-    ///
-    /// # Arguments
-    /// * `prompt` - The prompt text to send to the model
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - Cannot connect to Ollama
-    /// - The API returns a non-success status
-    /// - The response cannot be parsed
-    pub async fn send_prompt(&self, prompt: &str) -> Result<String, ApiError> {
+    /// Sends a list of messages to the AI model and returns the assistant response.
+    /// This uses the modern Chat API which is standard for current AI development.
+    pub async fn chat(&self, messages: Vec<Message>) -> Result<String, ApiError> {
+        let url = format!("{}/api/chat", self.base_url);
         let response = self
             .client
-            .post(OLLAMA_API_URL)
+            .post(url)
             .json(&json!({
                 "model": self.model,
-                "prompt": prompt,
-                "stream": false
+                "messages": messages,
+                "stream": false,
+                "options": {
+                    "temperature": 0.2, // Low temperature for consistent LaTeX generation
+                    "top_p": 0.9,
+                    "seed": 42
+                }
             }))
             .send()
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             return Err(ApiError::Response(format!(
-                "Ollama returned status {}",
-                response.status()
+                "Ollama chat error ({}): {}",
+                status, body
             )));
         }
 
-        let body: OllamaResponse = response.json().await?;
-        Ok(body.response)
+        let body: OllamaChatResponse = response.json().await?;
+        Ok(body.message.content)
     }
 }
 
@@ -156,16 +163,12 @@ mod tests {
         let _debug_str = format!("{:?}", err);
     }
 
-    // Note: Integration tests for check_model and send_prompt require a running
-    // Ollama instance and are better suited for integration test suite.
-    // Example integration test (requires Ollama running):
-    //
+    // Note: Integration tests require a running Ollama instance.
     // #[tokio::test]
-    // #[ignore] // Run with: cargo test -- --ignored
+    // #[ignore]
     // async fn test_check_model_integration() {
     //     let client = AiClient::new("qwen3:0.6b").unwrap();
     //     let result = client.check_model().await;
-    //     // May pass or fail depending on Ollama state
     //     println!("check_model result: {:?}", result);
     // }
 }
