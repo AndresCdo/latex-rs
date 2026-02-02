@@ -66,6 +66,51 @@ impl Preview {
         }
     }
 
+    /// Compiles LaTeX string directly to a PDF file at the specified destination.
+    pub fn export_pdf(&self, latex: &str, destination: &std::path::Path) -> Result<(), String> {
+        // Security: Validate input size
+        if latex.len() > MAX_LATEX_SIZE_BYTES {
+            return Err("Document too large".to_string());
+        }
+
+        let dir = tempdir().map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        let input_path = dir.path().join("doc.tex");
+        let temp_dir_path = dir.path().to_string_lossy().to_string();
+        let input_path_str = input_path.to_string_lossy().to_string();
+
+        fs::write(&input_path, latex).map_err(|e| {
+            Self::sanitize_paths(
+                &format!("Failed to write tex file: {}", e),
+                &temp_dir_path,
+                &input_path_str,
+            )
+        })?;
+
+        let mut cmd = Command::new("pdflatex");
+        cmd.arg("-no-shell-escape")
+            .arg("-interaction=nonstopmode")
+            .arg("-output-directory")
+            .arg(dir.path())
+            .arg(&input_path);
+
+        let output = Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
+            Self::sanitize_paths(
+                &format!("Failed to run pdflatex: {}", e),
+                &temp_dir_path,
+                &input_path_str,
+            )
+        })?;
+
+        let pdf_path = dir.path().join("doc.pdf");
+        if !pdf_path.exists() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("LaTeX failed to generate a PDF.\n{}", stderr));
+        }
+
+        fs::copy(&pdf_path, destination).map_err(|e| format!("Failed to copy PDF to destination: {}", e))?;
+        Ok(())
+    }
+
     fn compile_latex(&self, latex: &str) -> Result<Vec<String>, String> {
         // Security: Validate input size to prevent DoS
         if latex.len() > MAX_LATEX_SIZE_BYTES {
@@ -292,9 +337,15 @@ impl Preview {
                                  .page {
                                      background: white;
                                      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-                                     max-width: 100%;
+                                     margin-bottom: 20px;
+                                     width: 850px;
+                                     max-width: 95%;
                                  }
-                                 svg { display: block; width: 100%; height: auto; }
+                                 svg { 
+                                     display: block; 
+                                     width: 100%; 
+                                     height: auto; 
+                                 }
 
                                  @media (prefers-color-scheme: dark) {
                                      body {

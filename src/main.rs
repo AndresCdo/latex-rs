@@ -4,11 +4,12 @@ mod preview;
 mod queue;
 mod utils;
 
-use crate::api::AiClient;
+use crate::api::{AiClient, Message, MessageRole};
 use crate::constants::{
     AI_MAX_PATCH_ATTEMPTS, AI_MODEL_PRIORITY, APP_ID, APP_NAME, CONTAINER_ENV,
-    DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, PREVIEW_DEBOUNCE_MS, WEBKIT_SANDBOX_DISABLE_VAR,
-    WSL_INTEROP_ENV,
+    DEFAULT_EDITOR_FONT, DEFAULT_EDITOR_FONT_SIZE, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH,
+    DEFAULT_ZOOM_LEVEL, MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, PREVIEW_DEBOUNCE_MS,
+    WEBKIT_SANDBOX_DISABLE_VAR, WEBKIT_SANDBOX_DISABLE_VAR_MODERN, WSL_INTEROP_ENV, ZOOM_STEP,
 };
 use crate::preview::Preview;
 use crate::queue::CompilationQueue;
@@ -16,11 +17,12 @@ use crate::utils::{open_file, save_file};
 use adw::prelude::*;
 use adw::{Application, ApplicationWindow, HeaderBar, WindowTitle};
 use gtk4::{
-    glib, Box, Button, Entry, FileDialog, Orientation, Paned, Revealer, RevealerTransitionType,
-    ScrolledWindow, Spinner,
+    gdk, glib, Box, Button, Entry, EventControllerKey, EventControllerScroll,
+    EventControllerScrollFlags, ListBox, Orientation, Paned, PropagationPhase, Revealer,
+    RevealerTransitionType, ScrolledWindow, Spinner,
 };
 use sourceview5::prelude::*;
-use sourceview5::{Buffer, LanguageManager, View};
+use sourceview5::{Buffer, LanguageManager, View, StyleSchemeManager};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -45,8 +47,15 @@ fn needs_webkit_sandbox_disabled() -> bool {
     // Check for systemd-nspawn or other container indicators
     if std::path::Path::new("/run/.containerenv").exists()
         || std::path::Path::new("/.dockerenv").exists()
+        || std::path::Path::new("/.flatpak-info").exists()
     {
-        tracing::info!("Container marker file detected - WebKit sandbox will be disabled");
+        tracing::info!("Container/Flatpak marker file detected - WebKit sandbox will be disabled");
+        return true;
+    }
+
+    // Check for Snap packages
+    if std::env::var("SNAP").is_ok() {
+        tracing::info!("Snap environment detected - WebKit sandbox will be disabled");
         return true;
     }
 
@@ -73,6 +82,14 @@ fn needs_webkit_sandbox_disabled() -> bool {
         }
     }
 
+    // Check for Ubuntu 24.04+ AppArmor user namespace restrictions
+    if let Ok(content) = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") {
+        if content.trim() == "1" {
+            tracing::info!("AppArmor user namespace restrictions detected - WebKit sandbox will be disabled");
+            return true;
+        }
+    }
+
     // Check cgroups for container indicators
     if let Ok(cgroups) = std::fs::read_to_string("/proc/1/cgroup") {
          if cgroups.contains("docker") || cgroups.contains("kubepods") || cgroups.contains("lxc") {
@@ -86,20 +103,21 @@ fn needs_webkit_sandbox_disabled() -> bool {
 
 #[tokio::main]
 async fn main() -> glib::ExitCode {
+    // Initialize tracing for professional logging
+    tracing_subscriber::fmt::init();
+
     // Conditionally disable WebKit sandbox only in environments that require it
     // (WSL, containers, etc.) to prevent "bwrap: setting up uid map: Permission denied"
     if needs_webkit_sandbox_disabled() {
         // SAFETY: This is set early in main before any threads are spawned
         unsafe {
             std::env::set_var(WEBKIT_SANDBOX_DISABLE_VAR, "1");
+            std::env::set_var(WEBKIT_SANDBOX_DISABLE_VAR_MODERN, "1");
         }
         tracing::warn!(
             "WebKit sandbox disabled. This reduces security but is required in some environments."
         );
     }
-
-    // Initialize tracing for professional logging
-    tracing_subscriber::fmt::init();
 
     let app = Application::builder().application_id(APP_ID).build();
 
@@ -112,6 +130,8 @@ struct AppState {
     current_file: Option<PathBuf>,
     ai_client: Option<AiClient>,
     preview_generator: Preview,
+    editor_zoom: f64,
+    preview_zoom: f64,
 }
 
 
@@ -127,29 +147,73 @@ fn build_ui(app: &Application) {
     let toast_overlay = adw::ToastOverlay::new();
     window.set_content(Some(&toast_overlay));
 
-    let content_box = Box::new(Orientation::Vertical, 0);
-    toast_overlay.set_child(Some(&content_box));
+    let main_vbox = Box::new(Orientation::Vertical, 0);
+    toast_overlay.set_child(Some(&main_vbox));
+
+    // Custom CSS for better UI
+    let css_provider = gtk4::CssProvider::new();
+    css_provider.load_from_string("
+        .dim-label { opacity: 0.7; font-size: 0.9em; }
+        .sidebar { border-right: 1px solid alpha(@borders, 0.5); background: @view_bg_color; }
+        .linked button { border-radius: 0; }
+        .linked button:first-child { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+        .linked button:last-child { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+    ");
+    gtk4::style_context_add_provider_for_display(
+        &gdk::Display::default().expect("Could not connect to a display."),
+        &css_provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 
     // Header Bar
     let header_bar = HeaderBar::new();
     let view_title = WindowTitle::new("LaTeX.rs Editor", "");
     header_bar.set_title_widget(Some(&view_title));
 
-    let open_btn = Button::with_label("Open");
-    let save_btn = Button::with_label("Save");
-    let ai_btn = Button::with_label("AI Assistant");
+    // Left actions group
+    let left_box = Box::new(Orientation::Horizontal, 0);
+    left_box.add_css_class("linked");
+
+    let new_btn = Button::builder()
+        .icon_name("document-new-symbolic")
+        .tooltip_text("New Document")
+        .build();
+    let open_btn = Button::builder()
+        .icon_name("document-open-symbolic")
+        .tooltip_text("Open File")
+        .build();
+    let save_btn = Button::builder()
+        .icon_name("document-save-symbolic")
+        .tooltip_text("Save File")
+        .build();
+    let export_btn = Button::builder()
+        .icon_name("document-send-symbolic")
+        .tooltip_text("Export PDF")
+        .build();
+
+    left_box.append(&new_btn);
+    left_box.append(&open_btn);
+    left_box.append(&save_btn);
+    left_box.append(&export_btn);
+    header_bar.pack_start(&left_box);
+
+    // Right actions
+    let ai_btn = Button::builder()
+        .icon_name("starred-symbolic") // 'stars' or 'starred' are common fallbacks for AI/Magic
+        .tooltip_text("AI Assistant")
+        .sensitive(false)
+        .build();
     ai_btn.add_css_class("suggested-action");
-    ai_btn.set_sensitive(false); // Enable only after check
-    ai_btn.set_tooltip_text(Some("Checking Ollama status..."));
 
-    let ai_spinner = Spinner::new();
-    ai_spinner.set_margin_end(8);
+    let sidebar_toggle = gtk4::ToggleButton::builder()
+        .icon_name("sidebar-show-symbolic")
+        .tooltip_text("Toggle Outline")
+        .active(true)
+        .build();
 
-    header_bar.pack_start(&open_btn);
-    header_bar.pack_start(&save_btn);
+    header_bar.pack_end(&sidebar_toggle);
     header_bar.pack_end(&ai_btn);
-    header_bar.pack_end(&ai_spinner);
-    content_box.append(&header_bar);
+    main_vbox.append(&header_bar);
 
     // AI Prompt Entry (Revealer)
     let ai_revealer = Revealer::builder()
@@ -167,18 +231,69 @@ fn build_ui(app: &Application) {
         .hexpand(true)
         .build();
 
-    let ai_run_btn = Button::with_label("Generate");
+    let ai_spinner = Spinner::new();
+    let ai_run_btn = Button::builder()
+        .label("Generate")
+        .icon_name("system-run-symbolic")
+        .build();
     ai_run_btn.add_css_class("suggested-action");
 
     ai_entry_box.append(&ai_entry);
+    ai_entry_box.append(&ai_spinner);
     ai_entry_box.append(&ai_run_btn);
     ai_revealer.set_child(Some(&ai_entry_box));
-    content_box.append(&ai_revealer);
+    main_vbox.append(&ai_revealer);
+
+    // Sidebar & Content Split
+    let paned = Paned::new(Orientation::Horizontal);
+    paned.set_hexpand(true);
+    paned.set_vexpand(true);
+    paned.set_position(475); // Balanced split for Editor and Preview
+    paned.set_wide_handle(true);
+    
+    let outer_paned = Paned::new(Orientation::Horizontal);
+    outer_paned.set_hexpand(true);
+    outer_paned.set_vexpand(true);
+    outer_paned.set_position(250); // Initial sidebar width
+    outer_paned.set_wide_handle(true);
+    main_vbox.append(&outer_paned);
+
+    // Sidebar Outline
+    let sidebar_list = ListBox::new();
+    let sidebar_scroll = ScrolledWindow::builder()
+        .child(&sidebar_list)
+        .vexpand(true)
+        .width_request(200)
+        .build();
+    sidebar_scroll.add_css_class("sidebar");
+    outer_paned.set_start_child(Some(&sidebar_scroll));
+    outer_paned.set_end_child(Some(&paned));
+
+    // Status Bar
+    let status_bar = Box::new(Orientation::Horizontal, 12);
+    status_bar.set_margin_start(12);
+    status_bar.set_margin_end(12);
+    status_bar.set_margin_top(4);
+    status_bar.set_margin_bottom(4);
+    status_bar.add_css_class("dim-label");
+
+    let pos_label = gtk4::Label::new(Some("Line: 1, Col: 1"));
+    let word_count_label = gtk4::Label::new(Some("Words: 0"));
+    let ai_status_label = gtk4::Label::new(Some("AI: Checking..."));
+    ai_status_label.set_hexpand(true);
+    ai_status_label.set_halign(gtk4::Align::End);
+
+    status_bar.append(&pos_label);
+    status_bar.append(&word_count_label);
+    status_bar.append(&ai_status_label);
+    main_vbox.append(&status_bar);
 
     let state = Rc::new(RefCell::new(AppState {
         current_file: None,
         ai_client: None,
         preview_generator: Preview::new(),
+        editor_zoom: DEFAULT_ZOOM_LEVEL,
+        preview_zoom: DEFAULT_ZOOM_LEVEL,
     }));
 
     // Dependency check
@@ -199,6 +314,8 @@ fn build_ui(app: &Application) {
         state,
         #[weak]
         ai_btn,
+        #[weak]
+        ai_status_label,
         async move {
             let mut final_client = None;
 
@@ -217,21 +334,26 @@ fn build_ui(app: &Application) {
                 state.borrow_mut().ai_client = Some(client);
                 ai_btn.set_sensitive(true);
                 ai_btn.set_tooltip_text(Some(&format!("AI ready (Model: {})", model_name)));
+                ai_status_label.set_text(&format!("AI: Ready ({})", model_name));
                 tracing::info!("AI Assistant initialized with model: {}", model_name);
             } else {
                 ai_btn.set_tooltip_text(Some(
                     "Ollama not found or models missing. AI features disabled.",
                 ));
+                ai_status_label.set_text("AI: Unavailable");
                 tracing::warn!("AI Assistant could not be initialized.");
             }
         }
     ));
 
-    // Editor & Preview
-    let paned = Paned::new(Orientation::Horizontal);
-    paned.set_hexpand(true);
-    paned.set_vexpand(true);
-    content_box.append(&paned);
+    // Sidebar logic
+    sidebar_toggle.connect_active_notify(glib::clone!(
+        #[weak]
+        sidebar_scroll,
+        move |btn| {
+            sidebar_scroll.set_visible(btn.is_active());
+        }
+    ));
 
     // Editor
     let lang_manager = LanguageManager::default();
@@ -245,22 +367,317 @@ fn build_ui(app: &Application) {
     editor_view.set_monospace(true);
     editor_view.set_show_line_numbers(true);
     editor_view.set_highlight_current_line(true);
+    editor_view.set_auto_indent(true);
+    editor_view.set_insert_spaces_instead_of_tabs(true);
+    editor_view.set_indent_width(4);
+    buffer.set_highlight_matching_brackets(true);
+    editor_view.set_smart_backspace(true);
+
+    // Style Scheme Management (Dark/Light Mode)
+    let style_manager = adw::StyleManager::default();
+    let scheme_manager = StyleSchemeManager::default();
+    
+    let update_theme = glib::clone!(
+        #[weak]
+        buffer,
+        move |is_dark: bool| {
+            let scheme_id = if is_dark { "Adwaita-dark" } else { "Adwaita" };
+            if let Some(scheme) = scheme_manager.scheme(scheme_id) {
+                buffer.set_style_scheme(Some(&scheme));
+            } else {
+                // Fallback to classic schemes if Adwaita ones are missing
+                let fallback = if is_dark { "classic-dark" } else { "classic" };
+                if let Some(scheme) = scheme_manager.scheme(fallback) {
+                    buffer.set_style_scheme(Some(&scheme));
+                }
+            }
+        }
+    );
+
+    // Initial theme
+    update_theme(style_manager.is_dark());
+
+    // Listen for system theme changes
+    style_manager.connect_dark_notify(move |sm| {
+        update_theme(sm.is_dark());
+    });
 
     let editor_scroll = ScrolledWindow::builder()
         .child(&editor_view)
         .hexpand(true)
         .vexpand(true)
         .build();
-    paned.set_start_child(Some(&editor_scroll));
+    
+    // Search Bar
+    let search_revealer = Revealer::builder()
+        .transition_type(RevealerTransitionType::SlideDown)
+        .build();
+    let search_entry = gtk4::SearchEntry::builder()
+        .hexpand(true)
+        .placeholder_text("Search document...")
+        .build();
+    let search_box = Box::new(Orientation::Horizontal, 6);
+    search_box.set_margin_start(12);
+    search_box.set_margin_end(12);
+    search_box.set_margin_top(6);
+    search_box.set_margin_bottom(6);
+    search_box.append(&search_entry);
+    search_revealer.set_child(Some(&search_box));
+
+    let editor_container = Box::new(Orientation::Vertical, 0);
+    editor_container.append(&search_revealer);
+    editor_container.append(&editor_scroll);
+    paned.set_start_child(Some(&editor_container));
 
     // Preview
     let web_view = WebView::new();
+    if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
+        settings.set_zoom_text_only(false);
+        settings.set_enable_developer_extras(true);
+    }
     let preview_scroll = ScrolledWindow::builder()
         .child(&web_view)
         .hexpand(true)
         .vexpand(true)
         .build();
     paned.set_end_child(Some(&preview_scroll));
+
+    // Search Logic
+    let search_settings = sourceview5::SearchSettings::new();
+    let search_context = sourceview5::SearchContext::new(&buffer, Some(&search_settings));
+    search_context.set_highlight(true);
+
+    search_entry.connect_search_changed(glib::clone!(
+        #[weak]
+        search_settings,
+        move |entry| {
+            let text = entry.text();
+            if text.is_empty() {
+                search_settings.set_search_text(None::<&str>);
+            } else {
+                search_settings.set_search_text(Some(text.as_str()));
+            }
+        }
+    ));
+
+    search_entry.connect_next_match(glib::clone!(
+        #[weak]
+        search_context,
+        #[weak]
+        editor_view,
+        #[weak]
+        buffer,
+        move |_| {
+            let buf = buffer.upcast_ref::<gtk4::TextBuffer>();
+            let cursor_mark = buf.mark("insert").expect("No insert mark");
+            let iter = buf.iter_at_mark(&cursor_mark);
+            if let Some((start, end, _)) = search_context.forward(&iter) {
+                buf.select_range(&start, &end);
+                editor_view.scroll_to_iter(&mut start.clone(), 0.0, false, 0.5, 0.5);
+            }
+        }
+    ));
+
+    search_entry.connect_previous_match(glib::clone!(
+        #[weak]
+        search_context,
+        #[weak]
+        editor_view,
+        #[weak]
+        buffer,
+        move |_| {
+            let buf = buffer.upcast_ref::<gtk4::TextBuffer>();
+            let cursor_mark = buf.mark("insert").expect("No insert mark");
+            let iter = buf.iter_at_mark(&cursor_mark);
+            if let Some((start, end, _)) = search_context.backward(&iter) {
+                buf.select_range(&start, &end);
+                editor_view.scroll_to_iter(&mut start.clone(), 0.0, false, 0.5, 0.5);
+            }
+        }
+    ));
+
+    // Logic: Zoom (Keyboard & Touchpad)
+    let zoom_key_ctrl = EventControllerKey::new();
+    zoom_key_ctrl.set_propagation_phase(PropagationPhase::Capture);
+    window.add_controller(zoom_key_ctrl.clone());
+
+    let zoom_provider = gtk4::CssProvider::new();
+    #[allow(deprecated)]
+    editor_view.style_context().add_provider(
+        &zoom_provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
+    let apply_editor_zoom = {
+        let zoom_provider = zoom_provider.clone();
+        move |zoom: f64| {
+            let size = (DEFAULT_EDITOR_FONT_SIZE as f64 * zoom) as i32;
+            let css = format!(
+                "textview {{ font-family: '{}'; font-size: {}pt; }}",
+                DEFAULT_EDITOR_FONT, size
+            );
+            zoom_provider.load_from_string(&css);
+        }
+    };
+
+    let apply_preview_zoom = {
+        let web_view = web_view.clone();
+        move |zoom: f64| {
+            web_view.set_zoom_level(zoom);
+        }
+    };
+
+    // Initial application
+    apply_editor_zoom(DEFAULT_ZOOM_LEVEL);
+    apply_preview_zoom(DEFAULT_ZOOM_LEVEL);
+
+    zoom_key_ctrl.connect_key_pressed({
+        let state = state.clone();
+        let apply_editor_zoom = apply_editor_zoom.clone();
+        let apply_preview_zoom = apply_preview_zoom.clone();
+        let window_weak = window.downgrade();
+        let search_revealer_weak = search_revealer.downgrade();
+        let search_entry_weak = search_entry.downgrade();
+        let editor_view_weak = editor_view.downgrade();
+        let editor_scroll_weak = editor_scroll.downgrade();
+
+        move |_, key, _, modifier| {
+            let window = match window_weak.upgrade() { Some(w) => w, None => return glib::Propagation::Proceed };
+            let search_revealer = match search_revealer_weak.upgrade() { Some(r) => r, None => return glib::Propagation::Proceed };
+            let search_entry = match search_entry_weak.upgrade() { Some(e) => e, None => return glib::Propagation::Proceed };
+            let editor_view = match editor_view_weak.upgrade() { Some(v) => v, None => return glib::Propagation::Proceed };
+            let editor_scroll = match editor_scroll_weak.upgrade() { Some(s) => s, None => return glib::Propagation::Proceed };
+
+            if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
+                let mut s = state.borrow_mut();
+                let focus = gtk4::prelude::RootExt::focus(&window);
+                
+                // Determine which zoom to update based on focus
+                let is_editor = focus.as_ref().map(|f| f.is_ancestor(&editor_scroll)).unwrap_or(true);
+
+                match key {
+                    gdk::Key::f => {
+                        let is_revealed = search_revealer.reveals_child();
+                        search_revealer.set_reveal_child(!is_revealed);
+                        if !is_revealed {
+                            search_entry.grab_focus();
+                        } else {
+                            editor_view.grab_focus();
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::Escape => {
+                        if search_revealer.reveals_child() {
+                            search_revealer.set_reveal_child(false);
+                            editor_view.grab_focus();
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                    gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => {
+                        if is_editor {
+                            s.editor_zoom = (s.editor_zoom + ZOOM_STEP).min(MAX_ZOOM_LEVEL);
+                            apply_editor_zoom(s.editor_zoom);
+                        } else {
+                            s.preview_zoom = (s.preview_zoom + ZOOM_STEP).min(MAX_ZOOM_LEVEL);
+                            apply_preview_zoom(s.preview_zoom);
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::minus | gdk::Key::underscore | gdk::Key::KP_Subtract => {
+                        if is_editor {
+                            s.editor_zoom = (s.editor_zoom - ZOOM_STEP).max(MIN_ZOOM_LEVEL);
+                            apply_editor_zoom(s.editor_zoom);
+                        } else {
+                            s.preview_zoom = (s.preview_zoom - ZOOM_STEP).max(MIN_ZOOM_LEVEL);
+                            apply_preview_zoom(s.preview_zoom);
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::_0 | gdk::Key::KP_0 => {
+                        if is_editor {
+                            s.editor_zoom = DEFAULT_ZOOM_LEVEL;
+                            apply_editor_zoom(s.editor_zoom);
+                        } else {
+                            s.preview_zoom = DEFAULT_ZOOM_LEVEL;
+                            apply_preview_zoom(s.preview_zoom);
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+            }
+            glib::Propagation::Proceed
+        }
+    });
+
+    // Scroll zoom: tied to mouse position
+    let editor_scroll_ctrl = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
+    editor_scroll_ctrl.set_propagation_phase(PropagationPhase::Capture);
+    editor_view.add_controller(editor_scroll_ctrl.clone());
+    editor_scroll_ctrl.connect_scroll({
+        let state = state.clone();
+        let apply_editor_zoom = apply_editor_zoom.clone();
+        let ctrl_weak = editor_scroll_ctrl.downgrade();
+        move |_, _, dy| {
+            if let Some(ctrl) = ctrl_weak.upgrade() {
+                if ctrl.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                    let mut s = state.borrow_mut();
+                    if dy < 0.0 {
+                        s.editor_zoom = (s.editor_zoom + ZOOM_STEP).min(MAX_ZOOM_LEVEL);
+                    } else {
+                        s.editor_zoom = (s.editor_zoom - ZOOM_STEP).max(MIN_ZOOM_LEVEL);
+                    }
+                    apply_editor_zoom(s.editor_zoom);
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        }
+    });
+
+    let preview_scroll_ctrl = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
+    preview_scroll_ctrl.set_propagation_phase(PropagationPhase::Capture);
+    web_view.add_controller(preview_scroll_ctrl.clone());
+    preview_scroll_ctrl.connect_scroll({
+        let state = state.clone();
+        let apply_preview_zoom = apply_preview_zoom.clone();
+        let ctrl_weak = preview_scroll_ctrl.downgrade();
+        move |_, _, dy| {
+            if let Some(ctrl) = ctrl_weak.upgrade() {
+                if ctrl.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                    let mut s = state.borrow_mut();
+                    if dy < 0.0 {
+                        s.preview_zoom = (s.preview_zoom + ZOOM_STEP).min(MAX_ZOOM_LEVEL);
+                    } else {
+                        s.preview_zoom = (s.preview_zoom - ZOOM_STEP).max(MIN_ZOOM_LEVEL);
+                    }
+                    apply_preview_zoom(s.preview_zoom);
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        }
+    });
+
+    sidebar_list.connect_row_activated(glib::clone!(
+        #[weak] buffer,
+        #[weak] editor_view,
+        move |_, row| {
+
+            let index = row.index();
+            let text = crate::utils::buffer_to_string(buffer.upcast_ref());
+            let sections = crate::utils::extract_sections(&text);
+            
+            if let Some((_, line)) = sections.get(index as usize) {
+                let buf = buffer.upcast_ref::<gtk4::TextBuffer>();
+                if let Some(mut iter) = buf.iter_at_line(*line) {
+                    buf.place_cursor(&iter);
+                    editor_view.scroll_to_iter(&mut iter, 0.0, false, 0.5, 0.5);
+                    editor_view.grab_focus();
+                }
+            }
+        }
+    ));
 
     // Logic: Live Preview
     let preview_gen = state.borrow().preview_generator.clone();
@@ -270,9 +687,36 @@ fn build_ui(app: &Application) {
     buffer.connect_changed(glib::clone!(
         #[weak]
         web_view,
+        #[weak]
+        sidebar_list,
         #[strong]
         debounce_id,
+        #[strong]
+        state,
         move |buf| {
+            // Update Sidebar
+            let text = crate::utils::buffer_to_string(buf.upcast_ref());
+            let sections = crate::utils::extract_sections(&text);
+            
+            // Clear list
+            while let Some(child) = sidebar_list.first_child() {
+                sidebar_list.remove(&child);
+            }
+
+            for (title, _line) in sections {
+                let row = gtk4::ListBoxRow::new();
+                let label = gtk4::Label::builder()
+                    .label(&title)
+                    .xalign(0.0)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .margin_top(4)
+                    .margin_bottom(4)
+                    .build();
+                row.set_child(Some(&label));
+                sidebar_list.append(&row);
+            }
+
             if let Some(source_id) = debounce_id.borrow_mut().take() {
                 // Safely remove the source - it may have already fired, which is OK
                 source_id.remove();
@@ -283,6 +727,7 @@ fn build_ui(app: &Application) {
 
             let debounce_id_clone = debounce_id.clone();
             let queue_clone = queue.clone();
+            let state_render = state.clone();
             let source_id =
                 glib::timeout_add_local_once(std::time::Duration::from_millis(PREVIEW_DEBOUNCE_MS), move || {
                     // If this timer runs, it implies it wasn't cancelled.
@@ -295,10 +740,109 @@ fn build_ui(app: &Application) {
                         let html = queue_clone.enqueue(text).await
                             .unwrap_or_else(|| "Compilation cancelled".to_string());
                         web_view.load_html(&html, None);
+                        
+                        // Re-apply zoom as load_html resets it
+                        let zoom = state_render.borrow().preview_zoom;
+                        web_view.set_zoom_level(zoom);
                     });
                 });
 
             *debounce_id.borrow_mut() = Some(source_id);
+        }
+    ));
+
+    // Logic: Export PDF
+    export_btn.connect_clicked(glib::clone!(
+        #[weak]
+        window,
+        #[weak]
+        buffer,
+        #[strong]
+        state,
+        #[weak]
+        toast_overlay,
+        move |_| {
+            let dialog = gtk4::FileDialog::builder()
+                .title("Export PDF")
+                .initial_name("document.pdf")
+                .build();
+
+            let latex = crate::utils::buffer_to_string(buffer.upcast_ref());
+            let preview_gen = state.borrow().preview_generator.clone();
+
+            dialog.save(
+                Some(&window),
+                None::<&gio::Cancellable>,
+                glib::clone!(
+                    #[weak]
+                    toast_overlay,
+                    move |res| {
+                        if let Ok(file) = res {
+                            if let Some(path) = file.path() {
+                                let ctx = glib::MainContext::default();
+                                ctx.spawn_local(glib::clone!(
+                                    #[weak]
+                                    toast_overlay,
+                                    async move {
+                                        let result = tokio::task::spawn_blocking(move || {
+                                            preview_gen.export_pdf(&latex, &path)
+                                        })
+                                        .await
+                                        .unwrap_or_else(|e| Err(format!("Task panic: {}", e)));
+
+                                        match result {
+                                            Ok(_) => {
+                                                toast_overlay.add_toast(adw::Toast::new("PDF exported successfully"));
+                                            }
+                                            Err(e) => {
+                                                toast_overlay.add_toast(adw::Toast::new(&format!("Export failed: {}", e)));
+                                            }
+                                        }
+                                    }
+                                ));
+                            }
+                        }
+                    }
+                ),
+            );
+        }
+    ));
+
+    // Logic: New
+    new_btn.connect_clicked(glib::clone!(
+        #[weak]
+        buffer,
+        #[strong]
+        state,
+        #[weak]
+        view_title,
+        move |_| {
+            buffer.set_text("");
+            state.borrow_mut().current_file = None;
+            view_title.set_subtitle("");
+        }
+    ));
+
+    // Logic: Status Bar Updates
+    buffer.connect_cursor_position_notify(glib::clone!(
+        #[weak]
+        pos_label,
+        move |buf| {
+            let buf = buf.upcast_ref::<gtk4::TextBuffer>();
+            let iter = buf.iter_at_mark(&buf.mark("insert").expect("No insert mark"));
+            let line = iter.line() + 1;
+            let col = iter.line_offset() + 1;
+            pos_label.set_text(&format!("Line: {}, Col: {}", line, col));
+        }
+    ));
+
+    buffer.connect_changed(glib::clone!(
+        #[weak]
+        word_count_label,
+        move |buf| {
+            let text = crate::utils::buffer_to_string(buf.upcast_ref());
+            let words = text.split_whitespace().count();
+            word_count_label.set_text(&format!("Words: {}", words));
         }
     ));
 
@@ -313,7 +857,7 @@ fn build_ui(app: &Application) {
         #[weak]
         view_title,
         move |_| {
-            let dialog = FileDialog::builder().title("Open File").build();
+            let dialog = gtk4::FileDialog::builder().title("Open File").build();
 
             dialog.open(
                 Some(&window),
@@ -358,7 +902,7 @@ fn build_ui(app: &Application) {
                     tracing::error!("Failed to save: {}", e);
                 }
             } else {
-                let dialog = FileDialog::builder().title("Save File").build();
+                let dialog = gtk4::FileDialog::builder().title("Save File").build();
 
                 dialog.save(
                     Some(&window),
@@ -403,20 +947,14 @@ fn build_ui(app: &Application) {
 
     // Common AI logic
     let trigger_ai = glib::clone!(
-        #[strong]
-        state,
-        #[weak]
-        buffer,
-        #[weak]
-        ai_run_btn,
-        #[weak]
-        ai_spinner,
-        #[weak]
-        toast_overlay,
-        #[weak]
-        ai_entry,
-        #[weak]
-        ai_revealer,
+        #[strong] state,
+        #[weak] buffer,
+        #[weak] ai_run_btn,
+        #[weak] ai_spinner,
+        #[weak] toast_overlay,
+        #[weak] ai_entry,
+        #[weak] ai_revealer,
+        #[weak] ai_status_label,
         move || {
             let user_instruction = ai_entry.text().to_string();
             let text = crate::utils::buffer_to_string(buffer.upcast_ref());
@@ -425,124 +963,108 @@ fn build_ui(app: &Application) {
             if let Some(client) = client_opt {
                 ai_run_btn.set_sensitive(false);
                 ai_spinner.start();
+                ai_status_label.set_text("AI: Thinking...");
 
                 let ctx = glib::MainContext::default();
                 ctx.spawn_local(async move {
+                    // ... (spawn_local contents stay the same)
                     let is_empty = text.trim().is_empty();
+                    let use_full_document = is_empty || text.len() < 20000; // Prefer full document for <20KB files
 
-                    let mut current_prompt = if is_empty {
-                        let user_suffix = if user_instruction.is_empty() {
-                            "Generate a professional LaTeX starter template.".to_string()
+                    let mut messages = vec![
+                        Message {
+                            role: MessageRole::System,
+                            content: "You are an expert LaTeX assistant. Your goal is to help users write, fix, and enhance LaTeX documents. \
+                                      \n\nCORE RULES:\n\
+                                      - Output ONLY the LaTeX code or requested data.\n\
+                                      - Use markdown blocks: ```latex ... ``` for full documents or ```diff ... ``` for updates.\n\
+                                      - Do NOT include conversational text, greetings, or explanations.\n\
+                                      - ALWAYS start full documents with '\\documentclass{article}'.\n\
+                                      - NEVER use '\\documentclass{amsmath}' or other package names as classes.\n\
+                                      - Use standard packages: amsmath, amssymb, amsthm, geometry.\n\
+                                      - NO external dependencies, NO local images, NO custom .bib files.\n\
+                                      - If you define theorems, include '\\newtheorem{theorem}{Theorem}' in the preamble.".to_string(),
+                        }
+                    ];
+
+                    if use_full_document {
+                        let user_prompt = if is_empty {
+                            if user_instruction.is_empty() {
+                                "Generate a professional LaTeX starter template using '\\documentclass{article}'.".to_string()
+                            } else {
+                                format!("Generate a professional LaTeX starter template using '\\documentclass{{article}}' based on: {}", user_instruction)
+                            }
                         } else {
-                            format!(
-                                "Generate a professional LaTeX starter template based on these instructions: {}",
-                                user_instruction
-                            )
+                            format!("Update the following LaTeX document (using '\\documentclass{{article}}') based on these instructions: {}\n\nDocument:\n{}", user_instruction, text)
                         };
-                        format!(
-                            "SYSTEM: You are a LaTeX expert. \
-                            \nUSER: {} \
-                            \nCONSTRAINTS: \
-                            \n1. Use 'article' class. \
-                            \n2. NO external files, NO images, NO custom .bib files. \
-                            \n3. Use standard packages (amsmath, amssymb, amsthm, geometry). \
-                            \n4. If you use theorems/lemmas, include '\\newtheorem{{theorem}}{{Theorem}}' in the preamble. \
-                            \n5. Output ONLY the LaTeX code inside a markdown block: ```latex ... ```. \
-                            \n6. DO NOT provide any conversational text.",
-                            user_suffix
-                        )
+
+                        messages.push(Message {
+                            role: MessageRole::User,
+                            content: user_prompt,
+                        });
                     } else {
-                        let user_suffix = if user_instruction.is_empty() {
-                            "Enhance this document.".to_string()
-                        } else {
-                            format!(
-                                "Enhance this document based on these instructions: {}",
-                                user_instruction
-                            )
-                        };
-                        format!(
-                            "SYSTEM: You are a LaTeX expert. \
-                            \nUSER: {} \
-                            \nCONSTRAINTS: \
-                            \n1. Return ONLY a unified diff (diff -u). \
-                            \n2. Output the diff inside a markdown block: ```diff ... ```. \
-                            \n3. DO NOT include any explanation. \
-                            \n4. Start the diff with ---. \
-                            \n\nDocument:\n{}",
-                            user_suffix, text
-                        )
-                    };
+                        // For large documents, try unified diff to save tokens/time
+                        messages.push(Message {
+                            role: MessageRole::User,
+                            content: format!(
+                                "Update this document based on: {}\nReturn ONLY a unified diff (diff -u) in a ```diff``` block.\n\nDocument:\n{}",
+                                user_instruction, text
+                            ),
+                        });
+                    }
 
-                    let mut attempts = 0;
-                    let max_attempts = if is_empty { 1 } else { AI_MAX_PATCH_ATTEMPTS };
                     let mut success = false;
+                    let mut attempts = 0;
+                    let max_attempts = AI_MAX_PATCH_ATTEMPTS;
 
                     while attempts < max_attempts {
                         attempts += 1;
 
-                        if !is_empty && attempts == max_attempts {
-                            current_prompt = format!(
-                                "SYSTEM: The previous diff results were invalid. \
-                                \nUSER: Provide the FULL ENHANCED LATEX DOCUMENT now. \
-                                \nCONSTRAINTS: \
-                                \n1. Output ONLY the LaTeX code inside a markdown block: ```latex ... ```. \
-                                \n2. DO NOT provide any conversational text.\n\nDocument:\n{}",
-                                text
-                            );
-                        }
-
-                        match client.send_prompt(&current_prompt).await {
+                        match client.chat(messages.clone()).await {
                             Ok(response) => {
-                                if is_empty || (attempts == max_attempts) {
-                                    // Final fallback or initial template: treat as full file
+                                if use_full_document {
                                     let cleaned = crate::utils::extract_latex(&response);
                                     if !cleaned.is_empty() {
-                                        buffer.set_text(&cleaned);
-                                        tracing::info!("AI Assistant: Updated document (Full mode)");
-                                        success = true;
-                                    }
-                                    break;
-                                }
-
-                                match crate::utils::apply_patch(&text, &response) {
-                                    Ok(new_text) => {
-                                        if new_text == text {
-                                            tracing::warn!("AI Assistant: Applied patch result is identical to original text");
+                                        if cleaned == text {
+                                            tracing::warn!("AI returned identical content");
+                                            toast_overlay.add_toast(adw::Toast::new("AI suggests no changes needed."));
+                                            success = true; // Technically handled
                                         } else {
-                                            tracing::info!(
-                                                "AI Assistant: Text changed! Original: {} chars, New: {} chars",
-                                                text.len(),
-                                                new_text.len()
-                                            );
-                                            buffer.set_text(&new_text);
-                                            tracing::info!("AI Assistant: Buffer updated successfully");
+                                            buffer.set_text(&cleaned);
+                                            tracing::info!("AI Assistant: Document updated (Full Mode)");
+                                            success = true;
                                         }
-                                        tracing::info!(
-                                            "AI Assistant: Successfully applied patch on attempt {}",
-                                            attempts
-                                        );
-                                        success = true;
-                                        break;
                                     }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Patch Error (Attempt {}/{}): {}",
-                                            attempts,
-                                            max_attempts,
-                                            e
-                                        );
-                                        if attempts < max_attempts {
-                                            current_prompt = format!(
-                                                "The unified diff was invalid: {}. \
-                                                Please provide a valid unified diff (diff -u) now. \
-                                                Make sure every line in the hunk starts with '+', '-', or ' '. \
-                                                Do NOT use '...' or skip lines.\n\n\
-                                                Document:\n{}",
-                                                e, text
-                                            );
+                                } else {
+                                    // Try applying patch
+                                    match crate::utils::apply_patch(&text, &response) {
+                                        Ok(new_text) => {
+                                            if new_text == text {
+                                                tracing::warn!("AI diff resulted in no change");
+                                                toast_overlay.add_toast(adw::Toast::new("AI diff suggested no changes."));
+                                            } else {
+                                                buffer.set_text(&new_text);
+                                                tracing::info!("AI Assistant: Document updated (Diff Mode)");
+                                            }
+                                            success = true;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Patch failed (Attempt {}): {}", attempts, e);
+                                            if attempts < max_attempts {
+                                                // Ask for full document as fallback
+                                                messages.push(Message { role: MessageRole::Assistant, content: response });
+                                                messages.push(Message {
+                                                    role: MessageRole::User,
+                                                    content: "That diff was invalid. Provide the FULL enhanced LaTeX document instead within a ```latex``` block.".to_string()
+                                                });
+                                                // For next attempt, we switch to full document mode
+                                                // but keep the loop going
+                                                continue;
+                                            }
                                         }
                                     }
                                 }
+                                break;
                             }
                             Err(e) => {
                                 tracing::error!("AI Connection Error: {}", e);
@@ -552,19 +1074,16 @@ fn build_ui(app: &Application) {
                         }
                     }
 
-                    if !success && attempts >= max_attempts {
-                        toast_overlay.add_toast(adw::Toast::new(
-                            "AI failed to provide a valid update after multiple attempts.",
-                        ));
-                    }
-
-                    if success {
+                    if !success {
+                        toast_overlay.add_toast(adw::Toast::new("AI failed to provide a valid update."));
+                    } else {
                         ai_entry.set_text("");
                         ai_revealer.set_reveal_child(false);
                     }
 
                     ai_run_btn.set_sensitive(true);
                     ai_spinner.stop();
+                    ai_status_label.set_text("AI: Ready");
                 });
             }
         }
