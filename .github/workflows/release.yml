@@ -1,0 +1,47 @@
+name: Release Binary
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-release:
+    name: Build Release Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgtksourceview-5-dev \
+            libwebkitgtk-6.0-dev \
+            libgraphene-1.0-dev
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package Binary
+        run: |
+          mkdir dist
+          cp target/release/latex-rs dist/
+          cp README.md dist/
+          cp LICENSE dist/ 2>/dev/null || true
+          tar -czvf latex-rs-linux-x64.tar.gz -C dist .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: latex-rs-linux-x64.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
