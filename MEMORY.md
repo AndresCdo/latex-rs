@@ -18,7 +18,6 @@ This file tracks the project's state, major decisions, and progress to maintain 
 
 ## Pending Tasks
 
-- [ ] Add PDF export functionality (likely using `headless_chrome` or `print_to_pdf`).
 - [ ] Add project-wide configuration file (settings.toml).
 - [ ] Internationalization (i18n) support.
 - [ ] Keyboard shortcuts documentation.
@@ -31,13 +30,16 @@ This file tracks the project's state, major decisions, and progress to maintain 
 - [x] Inline AI Assistant prompting UI with dynamic GtkRevealer.
 - [x] Standardization on `qwen3:0.6b` as default AI model.
 - [x] Centralization of agentic instructions.
+- [x] **New Features Sprint (Ctrl+Export & Ctrl+Zoom)**:
+  - **PDF Export**: Added background PDF generation and file picker.
+  - **Zoom Support**: Implemented Ctrl+Scroll and Ctrl+Keyboard zoom logic.
 - [x] **Security hardening sprint (2026-02-02)**:
   - **Path sanitization**: All system paths in error messages replaced with `[TEMP_DIR]`
   - **Process timeouts**: 30-second timeout for pdflatex/pdftocairo with automatic termination
   - **Shell escape prevention**: Added `-no-shell-escape` flag to pdflatex
 
   - **Input size limit**: Documents >10MB rejected to prevent DoS
-  - **Conditional sandbox**: WebKit sandbox only disabled when needed (WSL/container detection)
+  - **Conditional sandbox**: WebKit sandbox only disabled when needed (WSL, containers, and Ubuntu 24.04 AppArmor detection)
   - **HTML escaping**: All error messages properly escaped for XSS prevention
   - **Sequential compilation queue**: Single-threaded LaTeX compilation to prevent temp file corruption
   - **Worker handle management**: Proper JoinHandle storage for graceful shutdown

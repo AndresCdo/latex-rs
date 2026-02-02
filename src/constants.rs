@@ -67,10 +67,7 @@ pub const COMPILATION_QUEUE_BUFFER: usize = 1;
 // ============================================================================
 
 /// Base URL for Ollama API.
-pub const OLLAMA_API_URL: &str = "http://localhost:11434/api/generate";
-
-/// URL for Ollama tags/models endpoint.
-pub const OLLAMA_TAGS_URL: &str = "http://localhost:11434/api/tags";
+pub const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 
 /// HTTP request timeout for AI operations.
 pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -91,5 +88,30 @@ pub const WSL_INTEROP_ENV: &str = "WSL_INTEROP";
 /// Environment variable to check for container runtime.
 pub const CONTAINER_ENV: &str = "container";
 
-/// WebKit sandbox disable environment variable (use with caution).
+/// WebKit sandbox disable environment variable (legacy/broad).
 pub const WEBKIT_SANDBOX_DISABLE_VAR: &str = "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS";
+
+/// WebKit sandbox disable environment variable (modern).
+pub const WEBKIT_SANDBOX_DISABLE_VAR_MODERN: &str = "WEBKIT_DISABLE_SANDBOX";
+
+// ============================================================================
+// UI Configuration
+// ============================================================================
+
+/// Default editor font family.
+pub const DEFAULT_EDITOR_FONT: &str = "Monospace";
+
+/// Default editor font size in points.
+pub const DEFAULT_EDITOR_FONT_SIZE: i32 = 12;
+
+/// Default zoom level (1.0 = 100%).
+pub const DEFAULT_ZOOM_LEVEL: f64 = 1.0;
+
+/// Minimum zoom level.
+pub const MIN_ZOOM_LEVEL: f64 = 0.5;
+
+/// Maximum zoom level.
+pub const MAX_ZOOM_LEVEL: f64 = 3.0;
+
+/// Zoom step for keyboard shortcuts.
+pub const ZOOM_STEP: f64 = 0.1;

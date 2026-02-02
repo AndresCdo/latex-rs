@@ -66,6 +66,26 @@ pub fn save_file(filename: &Path, text_buffer: &gtk4::TextBuffer) -> Result<()> 
     Ok(())
 }
 
+pub fn extract_sections(text: &str) -> Vec<(String, i32)> {
+    let mut sections = Vec::new();
+    let re = regex::Regex::new(r"\\(section|subsection|subsubsection)\*?\{([^}]+)\}").unwrap();
+    
+    for (i, line) in text.lines().enumerate() {
+        if let Some(caps) = re.captures(line) {
+            let level = &caps[1];
+            let title = &caps[2];
+            let prefix = match level {
+                "section" => "",
+                "subsection" => "  ",
+                "subsubsection" => "    ",
+                _ => "",
+            };
+            sections.push((format!("{}{}", prefix, title), i as i32));
+        }
+    }
+    sections
+}
+
 pub fn apply_patch(current: &str, patch: &str) -> Result<String> {
     let cleaned_patch = clean_diff(patch);
     tracing::debug!(
@@ -113,32 +133,57 @@ fn clean_diff(patch: &str) -> String {
 }
 
 pub fn extract_latex(response: &str) -> String {
-    // If there is a latex code block, take its content
-    if let Some(start_idx) = response.find("```latex") {
+    let raw = if let Some(start_idx) = response.find("```latex") {
         let after_start = &response[start_idx + 8..];
         if let Some(end_idx) = after_start.find("```") {
-            return after_start[..end_idx].trim().to_string();
+            after_start[..end_idx].trim().to_string()
+        } else {
+            after_start.trim().to_string()
         }
-    }
-
-    // Fallback: generic code block
-    if let Some(start_idx) = response.find("```") {
+    } else if let Some(start_idx) = response.find("```") {
         let after_start = &response[start_idx + 3..];
         if let Some(end_idx) = after_start.find("```") {
-            return after_start[..end_idx].trim().to_string();
+            after_start[..end_idx].trim().to_string()
+        } else {
+            after_start.trim().to_string()
         }
-    }
-
-    // Heuristic: If it looks like a full document, find \documentclass and \end{document}
-    if let Some(start_idx) = response.find("\\documentclass") {
+    } else if let Some(start_idx) = response.find("\\documentclass") {
         if let Some(end_idx) = response.rfind("\\end{document}") {
-            return response[start_idx..end_idx + 14].to_string();
+            response[start_idx..end_idx + 14].to_string()
+        } else {
+            response[start_idx..].trim().to_string()
         }
-        // If no end found, or it's a snippet, just take from \documentclass onwards
-        return response[start_idx..].trim().to_string();
+    } else {
+        response.trim().to_string()
+    };
+
+    sanitize_latex(&raw)
+}
+
+/// Post-processes AI-generated LaTeX to fix common hallucinations and formatting issues.
+fn sanitize_latex(latex: &str) -> String {
+    // 1. Normalize line endings (Remove \r)
+    let mut sanitized = latex.replace("\r\n", "\n").replace('\r', "\n");
+
+    // 2. Fix common AI document class hallucinations
+    // Small models like qwen often put package names in \documentclass
+    if sanitized.contains("\\documentclass{amsmath}")
+        || sanitized.contains("\\documentclass{amssymb}")
+        || sanitized.contains("\\documentclass{geometry}")
+    {
+        tracing::warn!("AI hallucinated document class; correcting to 'article'");
+        sanitized = sanitized
+            .replace("\\documentclass{amsmath}", "\\documentclass{article}\n\\usepackage{amsmath}")
+            .replace("\\documentclass{amssymb}", "\\documentclass{article}\n\\usepackage{amssymb}")
+            .replace("\\documentclass{geometry}", "\\documentclass{article}\n\\usepackage{geometry}");
     }
 
-    response.trim().to_string()
+    // 3. Ensure it starts with \documentclass if it looks like a full document
+    if sanitized.contains("\\begin{document}") && !sanitized.contains("\\documentclass") {
+        sanitized = format!("\\documentclass{{article}}\n\\usepackage{{amsmath}}\n\\usepackage{{amssymb}}\n\n{}", sanitized);
+    }
+
+    sanitized.trim().to_string()
 }
 
 #[cfg(test)]
