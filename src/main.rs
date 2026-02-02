@@ -175,7 +175,7 @@ fn build_ui(app: &Application) {
         move |buf| {
             if let Some(source_id) = debounce_id.borrow_mut().take() {
                 // Safely remove the source - it may have already fired, which is OK
-                let _ = source_id.remove();
+                source_id.remove();
             }
 
             let text = crate::utils::buffer_to_string(buf.upcast_ref());
