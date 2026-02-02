@@ -2,6 +2,15 @@
 
 This file tracks the project's state, major decisions, and progress to maintain context across agent sessions.
 
+## Migration Milestones
+
+- **v1.1.0 - The Feature Release**:
+  - Integrated Sidebar Outline for navigation.
+  - New Find/Search UI with match tracking.
+  - Zoom Support (Keyboard + Scroll).
+  - PDF Export functionality.
+  - CI/CD & Binary Release automation.
+
 ## Current Project Status
 
 - **Core Functionality**: Modern GTK 4 + Libadwaita UI with SourceView 5 editor and WebKit 6 preview.
