@@ -11,84 +11,97 @@ LaTeX-rs has been modernized to provide a world-class scientific writing experie
 ## Features
 
 - **Professional UI**: Native Libadwaita interface with adaptive layouts and modern GNOME styling.
-- **Real-time LaTeX Preview**: Ultra-fast rendering via **WebKit 6** and **KaTeX**.
+- **Real-time LaTeX Preview**: Live rendering via **pdflatex** → **SVG** pipeline displayed in **WebKit 6**.
 - **Privacy-First AI**: Integrated 100% local AI assistance via **Ollama** (supports Qwen, Llama, and more).
 - **Professional Editor**: Advanced syntax highlighting and editing features powered by **SourceView 5**.
 - **Native Performance**: Built entirely in Rust for maximum reliability and speed.
-- **Modern Standards**: Uses GTK 4, WebKit 6, and follows the latest Rust 2021/2024 conventions.
+- **Modern Standards**: Uses GTK 4, WebKit 6, and follows the latest Rust 2021 conventions.
 
 ## Build Requirements
 
 LaTeX-rs uses the latest GTK stack. Ensure you have the following system dependencies installed:
 
 ### Ubuntu/Debian
+
 ```shell
 sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitgtk-6.0-dev
+sudo apt install texlive-latex-base texlive-latex-extra poppler-utils
 ```
 
 ### Fedora
+
 ```shell
 sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel webkitgtk6.0-devel
+sudo dnf install texlive-scheme-basic poppler-utils
 ```
 
 ### macOS (Homebrew)
+
 ```shell
 brew install gtk4 libadwaita gtksourceview5 webkitgtk6
+brew install --cask mactex-no-gui
+brew install poppler
 ```
 
 ## Installation
 
-1. **Install Ollama**: Download and run [Ollama](https://ollama.ai/) for local AI features.
+1. **Install Ollama** (optional, for AI features):
+
    ```shell
-   ollama pull qwen2.5-coder:3b  # Recommended for LaTeX and Code
+   curl -fsSL https://ollama.ai/install.sh | sh
+   ollama pull qwen3:0.6b  # Recommended lightweight model
    ```
 
 2. **Clone & Run**:
+
    ```shell
    git clone https://github.com/AndresCdo/latex-rs.git
    cd latex-rs
    cargo run --release
    ```
 
+## Usage
+
+| Action | How |
+|--------|-----|
+| **Open file** | Click "Open" button or drag & drop |
+| **Save file** | Click "Save" button |
+| **Live preview** | Edit in left pane, see rendered PDF in right pane |
+| **AI Assistant** | Click "AI Assistant" button, type instruction, press Enter |
+
 ## AI Capabilities
 
 Unlock the power of local LLMs directly in your editor:
-- **Auto-Correction**: Fix LaTeX syntax errors instantly.
-- **Scientific Assistance**: Generate complex mathematical equations from natural language.
-- **Document Refactoring**: Improve the structure and flow of your scientific papers.
+
+- **Auto-Correction**: Fix LaTeX syntax errors instantly
+- **Scientific Assistance**: Generate complex mathematical equations from natural language
+- **Document Refactoring**: Improve the structure and flow of your scientific papers
+- **Equation Generation**: Describe math in plain English, get LaTeX code
+- **Paper Review**: Get feedback on document structure and content
 
 ## Architecture
 
-Modernized from the ground up:
-- **UI Architecture**: Programmatic GTK 4 with Libadwaita components.
-- **Async Runtime**: Powered by **Tokio** and **GLib MainContext** for non-blocking UI.
-- **Error Handling**: Robust error reporting using `anyhow` and `thiserror`.
-- **Modern Tooling**: Leveraging `tracing` for professional-grade logging.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     GTK 4 + Libadwaita                       │
+├─────────────────────────────┬───────────────────────────────┤
+│     SourceView 5 Editor     │     WebKit 6 Preview          │
+│     (LaTeX highlighting)    │     (SVG rendering)           │
+├─────────────────────────────┴───────────────────────────────┤
+│                    Tokio Async Runtime                       │
+├─────────────────────────────┬───────────────────────────────┤
+│     Compilation Queue       │     Ollama AI Client          │
+│     (pdflatex → pdftocairo) │     (Local LLM inference)     │
+└─────────────────────────────┴───────────────────────────────┘
+```
 
-## Usage
+Key components:
 
-- **Open/Save**: Use toolbar buttons or File menu
-- **Real-time preview**: Left pane edits LaTeX, right pane shows rendered output
-- **AI Assistant**: Click AI button to ask questions about LaTeX, generate equations, or review content
-- **Keyboard shortcuts**: Standard GTK shortcuts apply
-
-## AI Capabilities
-
-The editor integrates with Ollama to provide:
-
-- **Scientific reasoning**: Ask questions about mathematics, physics, or other sciences
-- **Equation generation**: Generate LaTeX equations from natural language
-- **Paper review**: Get feedback on your LaTeX document structure and content
-- **Code explanation**: Understand complex LaTeX packages and macros
-
-## Architecture
-
-Built on the foundation of `markdown-rs`, this editor extends the original markdown editor with:
-
-1. **LaTeX preview system**: Replaces markdown rendering with KaTeX-based LaTeX rendering
-2. **AI integration**: Adds Ollama API client for local AI processing
-3. **Sourceview integration**: Provides LaTeX syntax highlighting
-4. **Modular design**: Components can be reused or replaced independently
+- **UI Layer**: Programmatic GTK 4 with Libadwaita for GNOME integration
+- **Async Runtime**: Tokio + GLib MainContext for non-blocking operations
+- **Preview Pipeline**: pdflatex compiles LaTeX, pdftocairo converts to SVG
+- **Error Handling**: Robust reporting using `anyhow` and `thiserror`
+- **Logging**: Professional-grade tracing with `tracing` crate
 
 ## Contributing
 
@@ -100,8 +113,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
-- [markdown-rs](https://github.com/nilgradisnik/markdown-rs) for the original editor
-- [gtk-rs](https://gtk-rs.org/) for Rust bindings to GTK
+- [markdown-rs](https://github.com/nilgradisnik/markdown-rs) for the original editor inspiration
+- [gtk-rs](https://gtk-rs.org/) for excellent Rust bindings to GTK
 - [Ollama](https://ollama.ai/) for local AI inference
-- [KaTeX](https://katex.org/) for fast LaTeX rendering
-- [OpenAI Prism](https://prism.openai.com/) for inspiration
+- [TeX Live](https://tug.org/texlive/) for the LaTeX distribution

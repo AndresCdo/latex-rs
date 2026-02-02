@@ -156,4 +156,196 @@ mod tests {
 
         fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn test_open_file_not_found() {
+        let path = std::env::temp_dir().join("nonexistent_file_12345.txt");
+        let result = open_file(&path);
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Tests for extract_latex
+    // =========================================================================
+
+    #[test]
+    fn test_extract_latex_from_latex_block() {
+        let response = r#"Here is your document:
+```latex
+\documentclass{article}
+\begin{document}
+Hello World
+\end{document}
+```
+Hope this helps!"#;
+
+        let result = extract_latex(response);
+        assert!(result.contains("\\documentclass{article}"));
+        assert!(result.contains("\\end{document}"));
+        assert!(!result.contains("Hope this helps"));
+    }
+
+    #[test]
+    fn test_extract_latex_from_generic_block() {
+        let response = r#"```
+\documentclass{article}
+\begin{document}
+Test
+\end{document}
+```"#;
+
+        let result = extract_latex(response);
+        assert!(result.contains("\\documentclass{article}"));
+    }
+
+    #[test]
+    fn test_extract_latex_from_raw_document() {
+        let response = r#"Sure! Here is the document:
+\documentclass{article}
+\begin{document}
+Content here
+\end{document}
+Let me know if you need changes."#;
+
+        let result = extract_latex(response);
+        assert!(result.starts_with("\\documentclass"));
+        assert!(result.ends_with("\\end{document}"));
+    }
+
+    #[test]
+    fn test_extract_latex_partial_document() {
+        let response = "\\documentclass{article}\n\\usepackage{amsmath}";
+
+        let result = extract_latex(response);
+        assert!(result.contains("\\documentclass{article}"));
+        assert!(result.contains("\\usepackage{amsmath}"));
+    }
+
+    #[test]
+    fn test_extract_latex_plain_text() {
+        let response = "This is just plain text without any LaTeX";
+        let result = extract_latex(response);
+        assert_eq!(result, "This is just plain text without any LaTeX");
+    }
+
+    // =========================================================================
+    // Tests for clean_diff (via apply_patch behavior)
+    // =========================================================================
+
+    #[test]
+    fn test_apply_patch_simple() {
+        let original = "line1\nline2\nline3\n";
+        let patch = r#"--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,3 @@
+ line1
+-line2
++modified line2
+ line3
+"#;
+
+        let result = apply_patch(original, patch);
+        assert!(result.is_ok());
+        let patched = result.unwrap();
+        assert!(patched.contains("modified line2"));
+        assert!(!patched.contains("\nline2\n"));
+    }
+
+    #[test]
+    fn test_apply_patch_with_markdown_wrapper() {
+        let original = "hello\nworld\n";
+        let patch = r#"Here is the diff:
+```diff
+--- a/file.txt
++++ b/file.txt
+@@ -1,2 +1,2 @@
+-hello
++goodbye
+ world
+```
+Done!"#;
+
+        let result = apply_patch(original, patch);
+        assert!(result.is_ok());
+        let patched = result.unwrap();
+        assert!(patched.contains("goodbye"));
+    }
+
+    #[test]
+    fn test_apply_patch_invalid_format() {
+        let original = "some content";
+        let patch = "This is not a valid patch at all";
+
+        let result = apply_patch(original, patch);
+        // When the patch doesn't contain diff markers, clean_diff returns the original string,
+        // which then fails to parse as a valid patch or produces unexpected results.
+        // The behavior depends on diffy's handling - it may return Ok with unchanged content
+        // or Err. We just verify it doesn't panic and handles gracefully.
+        match result {
+            Ok(patched) => {
+                // If it "succeeds", the content should be unchanged since no valid patch was applied
+                assert_eq!(patched.trim(), original.trim());
+            }
+            Err(_) => {
+                // Expected - invalid patch format
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply_patch_context_mismatch() {
+        let original = "completely different content\n";
+        let patch = r#"--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,3 @@
+ line1
+-line2
++changed
+ line3
+"#;
+
+        let result = apply_patch(original, patch);
+        // Should fail because context doesn't match
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_apply_patch_addition_only() {
+        let original = "line1\nline3\n";
+        let patch = r#"--- a/file.txt
++++ b/file.txt
+@@ -1,2 +1,3 @@
+ line1
++line2
+ line3
+"#;
+
+        let result = apply_patch(original, patch);
+        assert!(result.is_ok());
+        let patched = result.unwrap();
+        assert!(patched.contains("line2"));
+    }
+
+    #[test]
+    fn test_apply_patch_deletion_only() {
+        let original = "line1\nline2\nline3\n";
+        let patch = r#"--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,2 @@
+ line1
+-line2
+ line3
+"#;
+
+        let result = apply_patch(original, patch);
+        assert!(result.is_ok());
+        let patched = result.unwrap();
+        assert!(!patched.contains("line2"));
+    }
+
+    // =========================================================================
+    // Tests for buffer_to_string (indirect, as it requires GTK)
+    // =========================================================================
+    // Note: buffer_to_string requires GTK initialization which is not
+    // available in unit tests. Integration tests would be needed for this.
 }
