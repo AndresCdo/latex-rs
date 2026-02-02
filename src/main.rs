@@ -100,7 +100,7 @@ fn build_ui(app: &Application) {
         #[weak]
         ai_btn,
         async move {
-            let models = ["qwen2.5-coder:3b", "llama3.2:3b", "llama3:8b", "mistral"];
+            let models = ["qwen3:0.6b", "qwen2.5-coder:3b", "llama3:8b", "mistral"];
             let mut final_client = None;
 
             for model_name in models {

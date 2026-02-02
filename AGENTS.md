@@ -16,7 +16,7 @@ Welcome, Agent. This file centralizes instructions and context for AI agents wor
 ## Architecture
 - [src/main.rs](src/main.rs): Entry point, UI layout, and signal connectivity.
 - [src/preview.rs](src/preview.rs): HTML generation for the preview pane using `horrorshow`.
-- [src/api.rs](src/api.rs): Client for interacting with the Ollama API (using `llama3.2:3b`).
+- [src/api.rs](src/api.rs): Client for interacting with the Ollama API (using `qwen3:0.6b`).
 - [src/utils.rs](src/utils.rs): Helpers and macros (e.g., `clone!`).
 
 ## Critical Patterns
