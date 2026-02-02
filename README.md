@@ -1,6 +1,6 @@
-# LaTeX-rs Professional
+# LaTeX Editor with AI Integration
 
-A high-performance, modern, and professional LaTeX editor with local AI integration and real-time Libadwaita preview.
+A modern, privacy-focused LaTeX editor built in Rust with GTK4, featuring real-time previews and local AI assistance via Ollama.
 
 ![screenshot](./screenshot.png)
 
