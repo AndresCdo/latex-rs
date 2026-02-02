@@ -69,14 +69,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libpango1.0-dev \
-            libcairo2-dev \
-            libatk1.0-dev \
-            libgdk-pixbuf2.0-dev \
-            libgtk-3-dev \
-            libsoup2.4-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libwebkit2gtk-4.1-dev
+            pkg-config \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgtksourceview-5-dev \
+            libwebkitgtk-6.0-dev \
+            libgraphene-1.0-dev
+
+      - name: Export PKG_CONFIG_PATH
+        run: echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -126,14 +127,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libpango1.0-dev \
-            libcairo2-dev \
-            libatk1.0-dev \
-            libgdk-pixbuf2.0-dev \
-            libgtk-3-dev \
-            libsoup2.4-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libwebkit2gtk-4.1-dev
+            pkg-config \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgtksourceview-5-dev \
+            libwebkitgtk-6.0-dev \
+            libgraphene-1.0-dev
+
+      - name: Export PKG_CONFIG_PATH
+        run: echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
 
       - name: Build (debug)
         run: cargo build --verbose
@@ -179,14 +181,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libpango1.0-dev \
-            libcairo2-dev \
-            libatk1.0-dev \
-            libgdk-pixbuf2.0-dev \
-            libgtk-3-dev \
-            libsoup2.4-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libwebkit2gtk-4.1-dev
+            pkg-config \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgtksourceview-5-dev \
+            libwebkitgtk-6.0-dev \
+            libgraphene-1.0-dev
+
+      - name: Export PKG_CONFIG_PATH
+        run: echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
 
       - name: Run tests
         run: cargo test --verbose
