@@ -38,11 +38,7 @@ pub enum ApiError {
     Stream(String),
 }
 
-#[derive(Debug, Clone)]
-pub struct AiResponse {
-    pub content: String,
-    pub reasoning: Option<String>,
-}
+pub type AiStream = Pin<Box<dyn Stream<Item = Result<AiChunk, ApiError>> + Send>>;
 
 #[derive(Debug, Clone)]
 pub enum AiChunk {
@@ -50,12 +46,9 @@ pub enum AiChunk {
     Reasoning(String),
 }
 
-pub type AiStream = Pin<Box<dyn Stream<Item = Result<AiChunk, ApiError>> + Send>>;
-
 #[async_trait]
 pub trait AiProvider: Send + Sync {
     fn name(&self) -> &str;
-    async fn chat(&self, messages: Vec<Message>) -> Result<AiResponse, ApiError>;
     async fn chat_stream(&self, messages: Vec<Message>) -> Result<AiStream, ApiError>;
     async fn check_availability(&self) -> Result<(), ApiError>;
 }

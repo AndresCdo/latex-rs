@@ -93,12 +93,25 @@ pub fn show_settings(
     model_row.add_suffix(&model_entry);
     group.add(&model_row);
 
+    let prompt_row = ActionRow::builder()
+        .title("Custom System Prompt")
+        .subtitle("Override default AI behavior")
+        .build();
+    let prompt_entry = Entry::builder()
+        .valign(gtk4::Align::Center)
+        .hexpand(true)
+        .placeholder_text("Optional: Custom system prompt...")
+        .build();
+    prompt_row.add_suffix(&prompt_entry);
+    group.add(&prompt_row);
+
     // Helper to update fields
     let update_fields = {
         let provider_dropdown = provider_dropdown.downgrade();
         let api_key_entry = api_key_entry.downgrade();
         let url_entry = url_entry.downgrade();
         let model_entry = model_entry.downgrade();
+        let prompt_entry = prompt_entry.downgrade();
         let state = state.clone();
         move || {
             let provider_dropdown = match provider_dropdown.upgrade() {
@@ -117,6 +130,10 @@ pub fn show_settings(
                 Some(e) => e,
                 None => return,
             };
+            let prompt_entry = match prompt_entry.upgrade() {
+                Some(e) => e,
+                None => return,
+            };
 
             let config = state.borrow().config.clone();
             let selected = provider_dropdown.selected();
@@ -124,6 +141,7 @@ pub fn show_settings(
                 api_key_entry.set_text(p.api_key.as_deref().unwrap_or(""));
                 url_entry.set_text(&p.base_url);
                 model_entry.set_text(&p.active_model);
+                prompt_entry.set_text(p.system_prompt.as_deref().unwrap_or(""));
             }
         }
     };
@@ -149,6 +167,8 @@ pub fn show_settings(
         url_entry,
         #[strong]
         model_entry,
+        #[strong]
+        prompt_entry,
         move |_| {
             let mut s = state.borrow_mut();
             let selected = provider_dropdown.selected();
@@ -167,6 +187,12 @@ pub fn show_settings(
                 p.api_key = if key.is_empty() { None } else { Some(key) };
                 p.base_url = url_entry.text().to_string();
                 p.active_model = model_entry.text().to_string();
+                let prompt = prompt_entry.text().to_string();
+                p.system_prompt = if prompt.is_empty() {
+                    None
+                } else {
+                    Some(prompt)
+                };
             }
 
             let _ = s.config.save();

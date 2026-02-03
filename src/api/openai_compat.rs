@@ -1,4 +1,4 @@
-use crate::api::{AiChunk, AiProvider, AiResponse, AiStream, ApiError, Message};
+use crate::api::{AiChunk, AiProvider, AiStream, ApiError, Message};
 use crate::constants::{AI_REQUEST_TIMEOUT, AI_SEED, AI_TEMPERATURE, AI_TOP_P};
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -28,22 +28,6 @@ impl OpenAiCompatibleProvider {
             api_key,
         }
     }
-}
-
-#[derive(Deserialize)]
-struct OpenAiChatResponse {
-    choices: Vec<OpenAiChoice>,
-}
-
-#[derive(Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiMessage,
-}
-
-#[derive(Deserialize)]
-struct OpenAiMessage {
-    content: String,
-    reasoning_content: Option<String>, // DeepSeek specific
 }
 
 #[derive(Deserialize)]
@@ -89,45 +73,6 @@ impl AiProvider for OpenAiCompatibleProvider {
                 "API returned status {}",
                 response.status()
             )))
-        }
-    }
-
-    async fn chat(&self, messages: Vec<Message>) -> Result<AiResponse, ApiError> {
-        let url = format!("{}/chat/completions", self.base_url);
-        let mut request = self.client.post(url);
-
-        if let Some(ref key) = self.api_key {
-            request = request.bearer_auth(key);
-        }
-
-        let response = request
-            .json(&json!({
-                "model": self.model,
-                "messages": messages,
-                "temperature": AI_TEMPERATURE,
-                "top_p": AI_TOP_P,
-                "seed": AI_SEED
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ApiError::Response(format!(
-                "API error ({}): {}",
-                status, body
-            )));
-        }
-
-        let body: OpenAiChatResponse = response.json().await?;
-        if let Some(choice) = body.choices.first() {
-            Ok(AiResponse {
-                content: choice.message.content.clone(),
-                reasoning: choice.message.reasoning_content.clone(),
-            })
-        } else {
-            Err(ApiError::Response("Empty response from API".to_string()))
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::api::{AiChunk, AiProvider, AiResponse, AiStream, ApiError, Message};
+use crate::api::{AiChunk, AiProvider, AiStream, ApiError, Message};
 use crate::constants::{AI_REQUEST_TIMEOUT, AI_SEED, AI_TEMPERATURE, AI_TOP_P};
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -29,7 +29,6 @@ impl OllamaProvider {
 #[derive(Deserialize)]
 struct OllamaChatResponse {
     message: Message,
-    done: bool,
 }
 
 #[derive(Deserialize)]
@@ -72,40 +71,6 @@ impl AiProvider for OllamaProvider {
                 self.model
             )))
         }
-    }
-
-    async fn chat(&self, messages: Vec<Message>) -> Result<AiResponse, ApiError> {
-        let url = format!("{}/api/chat", self.base_url);
-        let response = self
-            .client
-            .post(url)
-            .json(&json!({
-                "model": self.model,
-                "messages": messages,
-                "stream": false,
-                "options": {
-                    "temperature": AI_TEMPERATURE,
-                    "top_p": AI_TOP_P,
-                    "seed": AI_SEED
-                }
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ApiError::Response(format!(
-                "Ollama chat error ({}): {}",
-                status, body
-            )));
-        }
-
-        let body: OllamaChatResponse = response.json().await?;
-        Ok(AiResponse {
-            content: body.message.content,
-            reasoning: None,
-        })
     }
 
     async fn chat_stream(&self, messages: Vec<Message>) -> Result<AiStream, ApiError> {

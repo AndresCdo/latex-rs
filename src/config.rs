@@ -8,6 +8,7 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub base_url: String,
     pub active_model: String,
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -26,18 +27,21 @@ impl Default for AppConfig {
                     api_key: None,
                     base_url: "http://localhost:11434".to_string(),
                     active_model: "qwen3:0.6b".to_string(),
+                    system_prompt: None,
                 },
                 ProviderConfig {
                     name: "DeepSeek".to_string(),
                     api_key: None,
                     base_url: "https://api.deepseek.com/v1".to_string(),
                     active_model: "deepseek-reasoner".to_string(),
+                    system_prompt: None,
                 },
                 ProviderConfig {
                     name: "OpenAI".to_string(),
                     api_key: None,
                     base_url: "https://api.openai.com/v1".to_string(),
                     active_model: "gpt-4o".to_string(),
+                    system_prompt: None,
                 },
             ],
         }

@@ -181,6 +181,7 @@ fn build_ui(app: &Application) {
     let state = Rc::new(RefCell::new(AppState {
         current_file: None,
         ai_provider: None,
+        ai_cancellation: None,
         config,
         preview_generator: Preview::new(),
         editor_zoom: DEFAULT_ZOOM_LEVEL,
@@ -441,29 +442,55 @@ fn build_ui(app: &Application) {
             let provider_opt = state.borrow().ai_provider.clone();
 
             if let Some(provider) = provider_opt {
-                ai_run_btn.set_sensitive(false);
+                // Cancel any existing generation
+                if let Some(cancel) = state.borrow_mut().ai_cancellation.take() {
+                    let _ = cancel.try_send(());
+                }
+
+                let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+                state.borrow_mut().ai_cancellation = Some(tx);
+
+                ai_run_btn.set_sensitive(true);
+                ai_run_btn.set_label("Stop");
+                ai_run_btn.set_icon_name("process-stop-symbolic");
+                ai_run_btn.add_css_class("destructive-action");
+                ai_run_btn.remove_css_class("suggested-action");
+
                 ai_spinner.start();
                 ai_status_label.set_text("AI: Thinking...");
                 reasoning_revealer.set_reveal_child(false);
 
                 let ctx = glib::MainContext::default();
-                ctx.spawn_local(async move {
-                    let is_empty = text.trim().is_empty();
-                    let use_full_document = is_empty || text.len() < 20000;
+                ctx.spawn_local(glib::clone!(
+                    #[strong]
+                    state,
+                    #[weak]
+                    ai_run_btn,
+                    #[weak]
+                    ai_spinner,
+                    #[weak]
+                    ai_status_label,
+                    async move {
+                        let is_empty = text.trim().is_empty();
+                        let use_full_document = is_empty || text.len() < 20000;
+
+                    let system_prompt = state.borrow().config.get_active_provider()
+                        .and_then(|p| p.system_prompt.clone())
+                        .unwrap_or_else(|| "You are an expert LaTeX assistant. Your goal is to help users write, fix, and enhance LaTeX documents. \
+                                          \n\nCORE RULES:\n\
+                                          - Output ONLY the LaTeX code or requested data.\n\
+                                          - Use markdown blocks: ```latex ... ``` for full documents or ```diff ... ``` for updates.\n\
+                                          - Do NOT include conversational text, greetings, or explanations.\n\
+                                          - ALWAYS start full documents with '\\documentclass{article}'.\n\
+                                          - NEVER use '\\documentclass{amsmath}' or other package names as classes.\n\
+                                          - Use standard packages: amsmath, amssymb, amsthm, geometry.\n\
+                                          - NO external dependencies, NO local images, NO custom .bib files.\n\
+                                          - If you define theorems, include '\\newtheorem{theorem}{Theorem}' in the preamble.".to_string());
 
                     let mut messages = vec![
                         Message {
                             role: MessageRole::System,
-                            content: "You are an expert LaTeX assistant. Your goal is to help users write, fix, and enhance LaTeX documents. \
-                                      \n\nCORE RULES:\n\
-                                      - Output ONLY the LaTeX code or requested data.\n\
-                                      - Use markdown blocks: ```latex ... ``` for full documents or ```diff ... ``` for updates.\n\
-                                      - Do NOT include conversational text, greetings, or explanations.\n\
-                                      - ALWAYS start full documents with '\\documentclass{article}'.\n\
-                                      - NEVER use '\\documentclass{amsmath}' or other package names as classes.\n\
-                                      - Use standard packages: amsmath, amssymb, amsthm, geometry.\n\
-                                      - NO external dependencies, NO local images, NO custom .bib files.\n\
-                                      - If you define theorems, include '\\newtheorem{theorem}{Theorem}' in the preamble.".to_string(),
+                            content: system_prompt,
                         }
                     ];
 
@@ -503,29 +530,49 @@ fn build_ui(app: &Application) {
                             Ok(mut stream) => {
                                 let mut full_content = String::new();
                                 let mut full_reasoning = String::new();
+                                let mut cancelled = false;
 
-                                while let Some(chunk_result) = stream.next().await {
-                                    match chunk_result {
-                                        Ok(chunk) => {
-                                            match chunk {
-                                                AiChunk::Content(c) => {
-                                                    full_content.push_str(&c);
-                                                    // We don't update buffer in real-time for diff/full extraction logic yet,
-                                                    // but we could show a preview or just wait for completion.
-                                                    // For now, let's just collect it.
-                                                }
-                                                AiChunk::Reasoning(r) => {
-                                                    full_reasoning.push_str(&r);
-                                                    reasoning_label.set_text(&full_reasoning);
-                                                    reasoning_revealer.set_reveal_child(true);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Stream error: {}", e);
+                                loop {
+                                    tokio::select! {
+                                        _ = rx.recv() => {
+                                            tracing::info!("AI Assistant: Generation cancelled by user");
+                                            cancelled = true;
                                             break;
                                         }
+                                        chunk_opt = stream.next() => {
+                                            match chunk_opt {
+                                                Some(Ok(chunk)) => {
+                                                    match chunk {
+                                                        AiChunk::Content(c) => {
+                                                            full_content.push_str(&c);
+                                                            
+                                                            // Ghost Text Update
+                                                            if use_full_document {
+                                                                let partial_latex = crate::utils::extract_latex(&full_content);
+                                                                if !partial_latex.is_empty() {
+                                                                    buffer.set_text(&partial_latex);
+                                                                }
+                                                            }
+                                                        }
+                                                        AiChunk::Reasoning(r) => {
+                                                            full_reasoning.push_str(&r);
+                                                            reasoning_label.set_text(&full_reasoning);
+                                                            reasoning_revealer.set_reveal_child(true);
+                                                        }
+                                                    }
+                                                }
+                                                Some(Err(e)) => {
+                                                    tracing::error!("Stream error: {}", e);
+                                                    break;
+                                                }
+                                                None => break,
+                                            }
+                                        }
                                     }
+                                }
+
+                                if cancelled {
+                                    break;
                                 }
 
                                 if use_full_document {
@@ -586,9 +633,15 @@ fn build_ui(app: &Application) {
                     }
 
                     ai_run_btn.set_sensitive(true);
+                    ai_run_btn.set_label("Generate");
+                    ai_run_btn.set_icon_name("system-run-symbolic");
+                    ai_run_btn.remove_css_class("destructive-action");
+                    ai_run_btn.add_css_class("suggested-action");
+
                     ai_spinner.stop();
                     ai_status_label.set_text("AI: Ready");
-                });
+                    state.borrow_mut().ai_cancellation = None;
+                }));
             }
         }
     ));

@@ -59,11 +59,9 @@ pub const FS_FLUSH_DELAY_MS: u64 = 10;
 pub const COMPILATION_QUEUE_BUFFER: usize = 1;
 
 // ============================================================================
-// AI Client (Ollama)
 // ============================================================================
-
-/// Base URL for Ollama API.
-pub const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+// AI Configuration
+// ============================================================================
 
 /// HTTP request timeout for AI operations.
 pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -71,7 +69,7 @@ pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Maximum number of retry attempts for AI patch operations.
 pub const AI_MAX_PATCH_ATTEMPTS: u32 = 3;
 
-/// AI model temperature for LaTeX generation (lower = more deterministic).
+// AI model temperature for LaTeX generation (lower = more deterministic).
 pub const AI_TEMPERATURE: f64 = 0.2;
 
 /// AI model top_p for nucleus sampling.
@@ -79,9 +77,6 @@ pub const AI_TOP_P: f64 = 0.9;
 
 /// AI model random seed for reproducible outputs.
 pub const AI_SEED: u64 = 42;
-
-/// List of AI models to try in order of preference.
-pub const AI_MODEL_PRIORITY: &[&str] = &["qwen3:0.6b", "qwen2.5-coder:3b", "llama3:8b", "mistral"];
 
 // ============================================================================
 // Security
