@@ -10,7 +10,7 @@ mod utils;
 use crate::api::{AiChunk, Message, MessageRole};
 use crate::config::AppConfig;
 use crate::constants::{
-    AI_MAX_PATCH_ATTEMPTS, APP_ID, APP_NAME, DEFAULT_WINDOW_HEIGHT,
+    APP_ID, APP_NAME, DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH, DEFAULT_ZOOM_LEVEL, WEBKIT_SANDBOX_DISABLE_VAR,
     WEBKIT_SANDBOX_DISABLE_VAR_MODERN, WSL_INTEROP_ENV,
 };
@@ -167,10 +167,11 @@ fn build_ui(app: &Application) {
         ai_spinner,
         ai_run_btn,
         reasoning_revealer,
-        reasoning_label,
+        reasoning_view,
         suggestion_revealer,
         accept_btn,
         reject_btn,
+        clear_btn,
     ) = ai::create_ai_panel();
     main_vbox.append(&ai_revealer);
 
@@ -199,6 +200,7 @@ fn build_ui(app: &Application) {
         preview_generator: Preview::new(),
         editor_zoom: DEFAULT_ZOOM_LEVEL,
         preview_zoom: DEFAULT_ZOOM_LEVEL,
+        ai_history: Vec::new(),
     }));
 
     // Dependency check
@@ -397,6 +399,8 @@ fn build_ui(app: &Application) {
     );
 
     // AI Assistant Toggle
+    let ai_history_index: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+
     ai_btn.connect_clicked(glib::clone!(
         #[weak]
         ai_revealer,
@@ -419,40 +423,49 @@ fn build_ui(app: &Application) {
         #[strong]
         validate_ai,
         move |_| {
-            ui::settings::show_settings(
-                window.upcast_ref(),
-                state.clone(),
-                Some(validate_ai.clone()),
-            );
+            crate::ui::settings::show_settings(window.upcast_ref(), state.clone(), Some(validate_ai.clone()));
         }
     ));
 
-    // Common AI logic
-    let trigger_ai = Rc::new(glib::clone!(
-        #[strong]
-        state,
-        #[weak]
-        buffer,
-        #[weak]
-        ai_run_btn,
-        #[weak]
-        ai_spinner,
-        #[weak]
-        toast_overlay,
-        #[weak]
-        ai_entry,
-        #[weak]
-        ai_revealer,
-        #[weak]
-        ai_status_label,
-        #[weak]
-        reasoning_revealer,
-        #[weak]
-        reasoning_label,
-        #[weak]
-        suggestion_revealer,
+    let ai_entry_weak = ai_entry.downgrade();
+
+    let trigger_ai = {
+        let state = state.clone();
+        let buffer = buffer.downgrade();
+        let ai_run_btn = ai_run_btn.downgrade();
+        let ai_spinner = ai_spinner.downgrade();
+        let ai_entry = ai_entry.downgrade();
+        let ai_status_label = ai_status_label.downgrade();
+        let reasoning_revealer = reasoning_revealer.downgrade();
+        let reasoning_view = reasoning_view.downgrade();
+        let suggestion_revealer = suggestion_revealer.downgrade();
+        let editor_view = editor_view.downgrade();
+
         move || {
-            let user_instruction = ai_entry.text().to_string();
+            let ai_entry = if let Some(e) = ai_entry.upgrade() { e } else { return };
+            let ai_buffer = ai_entry.buffer();
+            let user_instruction = ai_buffer.text(&ai_buffer.start_iter(), &ai_buffer.end_iter(), false).to_string();
+            if user_instruction.trim().is_empty() {
+                return;
+            }
+            
+            // Add to history if not duplicate of last
+            {
+                let mut s = state.borrow_mut();
+                if s.ai_history.last() != Some(&user_instruction) {
+                    s.ai_history.push(user_instruction.clone());
+                }
+            }
+
+            let buffer = if let Some(b) = buffer.upgrade() { b } else { return };
+            let ai_run_btn = if let Some(b) = ai_run_btn.upgrade() { b } else { return };
+            let ai_spinner = if let Some(s) = ai_spinner.upgrade() { s } else { return };
+            let ai_status_label = if let Some(l) = ai_status_label.upgrade() { l } else { return };
+            let reasoning_revealer = if let Some(r) = reasoning_revealer.upgrade() { r } else { return };
+            let reasoning_view = if let Some(v) = reasoning_view.upgrade() { v } else { return };
+            let suggestion_revealer = if let Some(r) = suggestion_revealer.upgrade() { r } else { return };
+            let editor_view = if let Some(v) = editor_view.upgrade() { v } else { return };
+
             let (start, end) = buffer.selection_bounds().unwrap_or_else(|| {
                 let cursor = buffer.iter_at_mark(&buffer.mark("insert").unwrap());
                 let mut s = cursor.clone();
@@ -461,7 +474,7 @@ fn build_ui(app: &Application) {
                 e.forward_visible_lines(5);
                 (s, e)
             });
-
+            
             let selected_text = buffer.text(&start, &end, false).to_string();
             let provider_opt = state.borrow().ai_provider.clone();
 
@@ -477,7 +490,7 @@ fn build_ui(app: &Application) {
                     s.ai_cancellation = Some(tx);
                     s.is_ai_generating = true;
                     s.pending_suggestion = None;
-                    s.original_text_selection = None;
+                    s.original_text_selection = Some(selected_text.clone());
                 }
 
                 ai_run_btn.set_sensitive(true);
@@ -488,8 +501,12 @@ fn build_ui(app: &Application) {
 
                 ai_spinner.start();
                 ai_status_label.set_text("AI: Thinking...");
+                reasoning_view.buffer().set_text("");
                 reasoning_revealer.set_reveal_child(false);
                 suggestion_revealer.set_reveal_child(false);
+                
+                // Disable editing while generating
+                editor_view.set_editable(false);
 
                 let ctx = glib::MainContext::default();
                 ctx.spawn_local(glib::clone!(
@@ -505,9 +522,13 @@ fn build_ui(app: &Application) {
                     buffer,
                     #[weak]
                     suggestion_revealer,
+                    #[weak]
+                    reasoning_revealer,
+                    #[weak]
+                    reasoning_view,
+                    #[weak]
+                    editor_view,
                     async move {
-                        let is_empty = selected_text.trim().is_empty();
-
                         let system_prompt = state.borrow().config.get_active_provider()
                             .and_then(|p| p.system_prompt.clone())
                             .unwrap_or_else(|| "You are an expert LaTeX assistant. Your goal is to help users edit specific sections of their LaTeX documents. \
@@ -515,9 +536,12 @@ fn build_ui(app: &Application) {
                                               - Output ONLY the modified LaTeX code for the provided snippet.\n\
                                               - Do NOT include markdown blocks like ```latex.\n\
                                               - Do NOT include conversational text, greetings, or explanations.\n\
+                                              - If the user provides a small snippet, assume they want to edit it or add something relative to it.\n\
+                                              - If adding a new environment (table, figure, etc.), ensure it is properly closed.\n\
+                                              - Use ONLY standard LaTeX commands (article class). Avoid hallucinated commands like \\keywords (use \\paragraph{Keywords:} instead).\n\
                                               - Maintain the context of the surrounding code if applicable.".to_string());
 
-                        let mut messages = vec![
+                        let messages = vec![
                             Message {
                                 role: MessageRole::System,
                                 content: system_prompt,
@@ -531,6 +555,24 @@ fn build_ui(app: &Application) {
                         let mut full_content = String::new();
                         let mut full_reasoning = String::new();
                         let mut success = false;
+                        let mut ai_started_typing = false;
+                        let mut filter = crate::api::ThinkingFilter::new();
+
+                        // buffer is already sourceview5::Buffer here because it was upgraded in trigger_ai?
+                        // If it's not Option, then don't match it as Option.
+                        
+                        let reasoning_view = reasoning_view.downgrade();
+                        let reasoning_revealer = reasoning_revealer.downgrade();
+                        let ai_status_label = ai_status_label.downgrade();
+                        let suggestion_revealer = suggestion_revealer.downgrade();
+                        let ai_run_btn = ai_run_btn.downgrade();
+                        let ai_spinner = ai_spinner.downgrade();
+                        let editor_view = editor_view.downgrade();
+
+                        // Create marks to track the start and end of the AI insertion
+                        let start_mark = buffer.create_mark(None, &start, true);
+                        let curr_mark = buffer.create_mark(None, &start, false);
+                        let end_mark = buffer.create_mark(None, &end, false);
 
                         match provider.chat_stream(messages).await {
                             Ok(mut stream) => {
@@ -544,16 +586,42 @@ fn build_ui(app: &Application) {
                                         chunk_opt = stream.next() => {
                                             match chunk_opt {
                                                 Some(Ok(chunk)) => {
-                                                    match chunk {
-                                                        AiChunk::Content(c) => {
-                                                            full_content.push_str(&c);
-                                                            // Highlight selection and show progress somehow?
-                                                            // For inline, we'll wait for completion to show the Diff/Suggestion.
-                                                        }
-                                                        AiChunk::Reasoning(r) => {
-                                                            full_reasoning.push_str(&r);
-                                                            reasoning_label.set_text(&full_reasoning);
-                                                            reasoning_revealer.set_reveal_child(true);
+                                                    let processed_chunks = match chunk {
+                                                        AiChunk::Content(c) => filter.process(c),
+                                                        AiChunk::Reasoning(r) => vec![AiChunk::Reasoning(r)],
+                                                    };
+
+                                                    for p_chunk in processed_chunks {
+                                                        match p_chunk {
+                                                            AiChunk::Content(c) => {
+                                                                if !ai_started_typing {
+                                                                    buffer.begin_user_action();
+                                                                    // First time, delete the original selection
+                                                                    let mut s = buffer.iter_at_mark(&start_mark);
+                                                                    let mut e = buffer.iter_at_mark(&end_mark);
+                                                                    buffer.delete(&mut s, &mut e);
+                                                                    ai_started_typing = true;
+                                                                }
+                                                                
+                                                                let mut current_iter = buffer.iter_at_mark(&curr_mark);
+                                                                buffer.insert(&mut current_iter, &c);
+                                                                full_content.push_str(&c);
+                                                                
+                                                                // Apply highlighting to the new chunk
+                                                                let tag_start = buffer.iter_at_mark(&start_mark);
+                                                                let tag_end = buffer.iter_at_mark(&curr_mark);
+                                                                buffer.apply_tag_by_name("ai-suggestion", &tag_start, &tag_end);
+                                                            }
+                                                            AiChunk::Reasoning(r) => {
+                                                                full_reasoning.push_str(&r);
+                                                                if let Some(view) = reasoning_view.upgrade() {
+                                                                    let rb = view.buffer();
+                                                                    rb.insert(&mut rb.end_iter(), &r);
+                                                                }
+                                                                if let Some(rev) = reasoning_revealer.upgrade() {
+                                                                    rev.set_reveal_child(true);
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -570,36 +638,74 @@ fn build_ui(app: &Application) {
                                     }
                                 }
 
-                                if !cancelled && success {
-                                    state.borrow_mut().pending_suggestion = Some(full_content.clone());
-                                    // Highlight the suggestion in the editor (Temporary swap or split view?)
-                                    // Simple approach: Replace selection with suggestion, but allow UNDO/Reject.
-                                    // Professional approach: Store iterators and show Accept/Reject UI.
-                                    state.borrow_mut().original_text_selection = Some((start.clone(), end.clone()));
+                                if cancelled {
+                                    if ai_started_typing {
+                                        buffer.end_user_action();
+                                        buffer.undo();
+                                    }
+                                    if let Some(l) = ai_status_label.upgrade() {
+                                        l.set_text("AI: Cancelled");
+                                    }
+                                } else if success {
+                                    // Final check/cleanup
+                                    let final_text = if full_content.contains("---") || full_content.contains("@@") {
+                                         // If it looks like a patch, we might need to re-apply it properly
+                                         full_content.clone()
+                                    } else {
+                                        crate::utils::extract_latex(&full_content)
+                                    };
+
+                                    if final_text != full_content {
+                                        // If extraction changed things, update the buffer one last time
+                                        let mut s = buffer.iter_at_mark(&start_mark);
+                                        let mut e = buffer.iter_at_mark(&curr_mark);
+                                        buffer.delete(&mut s, &mut e);
+                                        
+                                        let mut insert_iter = buffer.iter_at_mark(&start_mark);
+                                        buffer.insert(&mut insert_iter, &final_text);
+                                        
+                                        let tag_start = buffer.iter_at_mark(&start_mark);
+                                        let tag_end = buffer.iter_at_mark(&curr_mark);
+                                        buffer.apply_tag_by_name("ai-suggestion", &tag_start, &tag_end);
+                                    }
+
+                                    state.borrow_mut().pending_suggestion = Some(final_text.clone());
                                     
-                                    // Show the suggestion in a way the user can see it.
-                                    // For now, let's insert it and highlight it.
-                                    buffer.begin_user_action();
-                                    buffer.delete(&mut start.clone(), &mut end.clone());
-                                    buffer.insert(&mut start.clone(), &full_content);
-                                    buffer.end_user_action();
+                                    if ai_started_typing {
+                                        buffer.end_user_action();
+                                    }
                                     
-                                    suggestion_revealer.set_reveal_child(true);
+                                    if let Some(rev) = suggestion_revealer.upgrade() {
+                                        rev.set_reveal_child(true);
+                                    }
                                 }
+                                
+                                buffer.delete_mark(&start_mark);
+                                buffer.delete_mark(&curr_mark);
+                                buffer.delete_mark(&end_mark);
                             }
                             Err(e) => {
                                 tracing::error!("AI Error: {}", e);
                             }
                         }
 
-                        ai_run_btn.set_sensitive(true);
-                        ai_run_btn.set_label("Generate");
-                        ai_run_btn.set_icon_name("system-run-symbolic");
-                        ai_run_btn.remove_css_class("destructive-action");
-                        ai_run_btn.add_css_class("suggested-action");
+                        if let Some(btn) = ai_run_btn.upgrade() {
+                            btn.set_sensitive(true);
+                            btn.set_label("Generate");
+                            btn.set_icon_name("system-run-symbolic");
+                            btn.remove_css_class("destructive-action");
+                            btn.add_css_class("suggested-action");
+                        }
 
-                        ai_spinner.stop();
-                        ai_status_label.set_text("AI: Ready");
+                        if let Some(s) = ai_spinner.upgrade() {
+                            s.stop();
+                        }
+                        if let Some(l) = ai_status_label.upgrade() {
+                            l.set_text("AI: Ready");
+                        }
+                        if let Some(v) = editor_view.upgrade() {
+                            v.set_editable(true);
+                        }
                         {
                             let mut s = state.borrow_mut();
                             s.ai_cancellation = None;
@@ -609,8 +715,8 @@ fn build_ui(app: &Application) {
                 ));
             }
         }
-    ));
-
+    };
+    let trigger_ai = Rc::new(trigger_ai);
 
     ai_run_btn.connect_clicked(glib::clone!(
         #[strong]
@@ -620,13 +726,68 @@ fn build_ui(app: &Application) {
         }
     ));
 
-    ai_entry.connect_activate(glib::clone!(
-        #[strong]
-        trigger_ai,
-        move |_| {
-            trigger_ai();
-        }
-    ));
+    let key_controller = gtk4::EventControllerKey::new();
+    ai_entry_weak.upgrade().map(|e| {
+        let trigger_ai = trigger_ai.clone();
+        e.add_controller(key_controller.clone());
+        key_controller.connect_key_pressed(glib::clone!(
+            #[strong]
+            state,
+            #[strong]
+            ai_history_index,
+            move |controller, key, _, _| {
+                let Some(ai_entry) = ai_entry_weak.upgrade() else { return glib::Propagation::Proceed };
+                let ai_buffer = ai_entry.buffer();
+                
+                let history = state.borrow().ai_history.clone();
+                let mut history_idx = ai_history_index.borrow_mut();
+                match key {
+                    gdk::Key::Up if !history.is_empty() => {
+                        let new_idx = match *history_idx {
+                            Some(idx) if idx > 0 => Some(idx - 1),
+                            Some(idx) => Some(idx),
+                            None => Some(history.len() - 1),
+                        };
+                        if let Some(idx) = new_idx {
+                            ai_buffer.set_text(&history[idx]);
+                            *history_idx = Some(idx);
+                            glib::Propagation::Stop
+                        } else {
+                            glib::Propagation::Proceed
+                        }
+                    }
+                    gdk::Key::Down if !history.is_empty() => {
+                        let new_idx = match *history_idx {
+                            Some(idx) if idx < history.len() - 1 => Some(idx + 1),
+                            _ => None,
+                        };
+                        if let Some(idx) = new_idx {
+                            ai_buffer.set_text(&history[idx]);
+                            *history_idx = Some(idx);
+                            glib::Propagation::Stop
+                        } else {
+                            ai_buffer.set_text("");
+                            *history_idx = None;
+                            glib::Propagation::Stop
+                        }
+                    }
+                    gdk::Key::Return => {
+                        let mask = controller.current_event_state();
+                        if mask.contains(gdk::ModifierType::CONTROL_MASK) {
+                            trigger_ai();
+                            glib::Propagation::Stop
+                        } else {
+                            glib::Propagation::Proceed
+                        }
+                    }
+                    _ => glib::Propagation::Proceed,
+                }
+            }
+        ));
+    });
+
+
+    // We don't connect activate for TextView, we use the button or keyboard shortcuts in the controller
 
     accept_btn.connect_clicked(glib::clone!(
         #[strong]
@@ -643,6 +804,10 @@ fn build_ui(app: &Application) {
                 s.pending_suggestion = None;
                 s.original_text_selection = None;
             }
+            // Remove the highlighting tag
+            let (start, end) = buffer.bounds();
+            buffer.remove_tag_by_name("ai-suggestion", &start, &end);
+            
             suggestion_revealer.set_reveal_child(false);
             ai_revealer.set_reveal_child(false);
             buffer.emit_by_name::<()>("changed", &[]);
@@ -668,5 +833,23 @@ fn build_ui(app: &Application) {
         }
     ));
 
+    clear_btn.connect_clicked(glib::clone!(
+        #[weak]
+        ai_entry,
+        #[weak]
+        reasoning_view,
+        #[weak]
+        reasoning_revealer,
+        move |_| {
+            ai_entry.buffer().set_text("");
+            reasoning_view.buffer().set_text("");
+            reasoning_revealer.set_reveal_child(false);
+        }
+    ));
+
+    // Present window before starting background checks to avoid "GtkGizmo without allocation" warnings
     window.present();
+
+    // AI Initialization Check
+    validate_ai();
 }

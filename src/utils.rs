@@ -33,6 +33,15 @@ pub fn check_dependencies() -> Vec<String> {
         missing.push("pdftocairo (poppler-utils)".to_string());
     }
 
+    // Check biber
+    if std::process::Command::new("biber")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        missing.push("biber (biber)".to_string());
+    }
+
     missing
 }
 
@@ -92,52 +101,6 @@ pub fn extract_sections(text: &str) -> Vec<(String, i32)> {
         }
     }
     sections
-}
-
-pub fn apply_patch(current: &str, patch: &str) -> Result<String> {
-    let cleaned_patch = clean_diff(patch);
-    tracing::debug!(
-        "AI Assistant: Cleaned patch used for applying: {}",
-        cleaned_patch
-    );
-
-    let patch_obj = diffy::Patch::from_str(&cleaned_patch)
-        .map_err(|e| anyhow::anyhow!("Invalid patch format: {}", e))?;
-
-    diffy::apply(current, &patch_obj).map_err(|e| anyhow::anyhow!("Failed to apply patch: {}", e))
-}
-
-fn clean_diff(patch: &str) -> String {
-    // LLMs often wrap the diff in markdown code blocks.
-    // We want to extract just the diff part starting from "---" or "@@"
-
-    let mut cleaned = String::new();
-    let mut found_start = false;
-
-    for line in patch.lines() {
-        if !found_start {
-            if line.starts_with("---") || line.starts_with("@@") {
-                found_start = true;
-                cleaned.push_str(line);
-                cleaned.push('\n');
-            }
-            continue;
-        }
-
-        // Stop if we see ending backticks of a code block or unrelated text
-        if line.starts_with("```") {
-            break;
-        }
-
-        cleaned.push_str(line);
-        cleaned.push('\n');
-    }
-
-    if !found_start {
-        return patch.to_string();
-    }
-
-    cleaned
 }
 
 pub fn extract_latex(response: &str) -> String {
@@ -202,6 +165,14 @@ fn sanitize_latex(latex: &str) -> String {
             sanitized
         );
     }
+
+    // 4. Fix common hallucinated commands
+    // Replace \keywords{...} with \paragraph{Keywords:} ...
+    static KEYWORDS_REGEX: OnceLock<Regex> = OnceLock::new();
+    let re = KEYWORDS_REGEX.get_or_init(|| Regex::new(r"\\keywords\{([^}]+)\}").unwrap());
+    sanitized = re
+        .replace_all(&sanitized, "\\paragraph{Keywords:} $1")
+        .to_string();
 
     sanitized.trim().to_string()
 }
@@ -293,121 +264,6 @@ Let me know if you need changes."#;
         assert_eq!(result, "This is just plain text without any LaTeX");
     }
 
-    // =========================================================================
-    // Tests for clean_diff (via apply_patch behavior)
-    // =========================================================================
-
-    #[test]
-    fn test_apply_patch_simple() {
-        let original = "line1\nline2\nline3\n";
-        let patch = r#"--- a/file.txt
-+++ b/file.txt
-@@ -1,3 +1,3 @@
- line1
--line2
-+modified line2
- line3
-"#;
-
-        let result = apply_patch(original, patch);
-        assert!(result.is_ok());
-        let patched = result.unwrap();
-        assert!(patched.contains("modified line2"));
-        assert!(!patched.contains("\nline2\n"));
-    }
-
-    #[test]
-    fn test_apply_patch_with_markdown_wrapper() {
-        let original = "hello\nworld\n";
-        let patch = r#"Here is the diff:
-```diff
---- a/file.txt
-+++ b/file.txt
-@@ -1,2 +1,2 @@
--hello
-+goodbye
- world
-```
-Done!"#;
-
-        let result = apply_patch(original, patch);
-        assert!(result.is_ok());
-        let patched = result.unwrap();
-        assert!(patched.contains("goodbye"));
-    }
-
-    #[test]
-    fn test_apply_patch_invalid_format() {
-        let original = "some content";
-        let patch = "This is not a valid patch at all";
-
-        let result = apply_patch(original, patch);
-        // When the patch doesn't contain diff markers, clean_diff returns the original string,
-        // which then fails to parse as a valid patch or produces unexpected results.
-        // The behavior depends on diffy's handling - it may return Ok with unchanged content
-        // or Err. We just verify it doesn't panic and handles gracefully.
-        match result {
-            Ok(patched) => {
-                // If it "succeeds", the content should be unchanged since no valid patch was applied
-                assert_eq!(patched.trim(), original.trim());
-            }
-            Err(_) => {
-                // Expected - invalid patch format
-            }
-        }
-    }
-
-    #[test]
-    fn test_apply_patch_context_mismatch() {
-        let original = "completely different content\n";
-        let patch = r#"--- a/file.txt
-+++ b/file.txt
-@@ -1,3 +1,3 @@
- line1
--line2
-+changed
- line3
-"#;
-
-        let result = apply_patch(original, patch);
-        // Should fail because context doesn't match
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_apply_patch_addition_only() {
-        let original = "line1\nline3\n";
-        let patch = r#"--- a/file.txt
-+++ b/file.txt
-@@ -1,2 +1,3 @@
- line1
-+line2
- line3
-"#;
-
-        let result = apply_patch(original, patch);
-        assert!(result.is_ok());
-        let patched = result.unwrap();
-        assert!(patched.contains("line2"));
-    }
-
-    #[test]
-    fn test_apply_patch_deletion_only() {
-        let original = "line1\nline2\nline3\n";
-        let patch = r#"--- a/file.txt
-+++ b/file.txt
-@@ -1,3 +1,2 @@
- line1
--line2
- line3
-"#;
-
-        let result = apply_patch(original, patch);
-        assert!(result.is_ok());
-        let patched = result.unwrap();
-        assert!(!patched.contains("line2"));
-    }
-
     #[test]
     fn test_extract_sections() {
         let text = r#"\section{Intro}
@@ -431,6 +287,14 @@ End
         let result = sanitize_latex(text);
         assert!(result.contains("\\documentclass{article}"));
         assert!(result.contains("\\usepackage{amsmath}"));
+    }
+
+    #[test]
+    fn test_sanitize_latex_keywords() {
+        let text = "\\keywords{science, latex, rust}";
+        let result = sanitize_latex(text);
+        assert!(result.contains("\\paragraph{Keywords:} science, latex, rust"));
+        assert!(!result.contains("\\keywords"));
     }
 
     #[test]

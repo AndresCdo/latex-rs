@@ -42,7 +42,9 @@ struct OpenAiStreamChoice {
 
 #[derive(Deserialize)]
 struct OpenAiDelta {
+    #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
     reasoning_content: Option<String>,
 }
 
@@ -108,15 +110,20 @@ impl AiProvider for OpenAiCompatibleProvider {
         let stream = response
             .bytes_stream()
             .map(|item| item.map_err(ApiError::HttpClient))
-            .filter_map(|item| async move {
-                match item {
+            .scan(Vec::new(), |buffer, item| {
+                let res = match item {
                     Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes);
+                        buffer.extend_from_slice(&bytes);
                         let mut chunks = Vec::new();
-                        for line in text.lines() {
+                        while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                            let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
+                            let line = String::from_utf8_lossy(&line_bytes);
+                            let line = line.trim();
+
                             if line.is_empty() || line == "data: [DONE]" {
                                 continue;
                             }
+
                             if let Some(json_str) = line.strip_prefix("data: ") {
                                 if let Ok(chunk) = serde_json::from_str::<OpenAiStreamResponse>(json_str) {
                                     if let Some(choice) = chunk.choices.first() {
@@ -130,14 +137,11 @@ impl AiProvider for OpenAiCompatibleProvider {
                                 }
                             }
                         }
-                        if chunks.is_empty() {
-                            None
-                        } else {
-                            Some(futures::stream::iter(chunks))
-                        }
+                        Some(futures::stream::iter(chunks))
                     }
                     Err(e) => Some(futures::stream::iter(vec![Err(e)])),
-                }
+                };
+                futures::future::ready(res)
             })
             .flatten();
 

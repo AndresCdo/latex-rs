@@ -34,8 +34,6 @@ pub enum ApiError {
     Response(String),
     #[error("Configuration error: {0}")]
     Config(String),
-    #[error("Stream error: {0}")]
-    Stream(String),
 }
 
 pub type AiStream = Pin<Box<dyn Stream<Item = Result<AiChunk, ApiError>> + Send>>;
@@ -44,6 +42,108 @@ pub type AiStream = Pin<Box<dyn Stream<Item = Result<AiChunk, ApiError>> + Send>
 pub enum AiChunk {
     Content(String),
     Reasoning(String),
+}
+
+pub struct ThinkingFilter {
+    inside_think: bool,
+    buffer: String,
+}
+
+impl ThinkingFilter {
+    pub fn new() -> Self {
+        Self {
+            inside_think: false,
+            buffer: String::new(),
+        }
+    }
+
+    pub fn process(&mut self, text: String) -> Vec<AiChunk> {
+        let mut chunks = Vec::new();
+        self.buffer.push_str(&text);
+
+        loop {
+            if !self.inside_think {
+                if let Some(start_pos) = self.buffer.find("<think>") {
+                    let content: String = self.buffer.drain(..start_pos).collect();
+                    if !content.is_empty() {
+                        chunks.push(AiChunk::Content(content));
+                    }
+                    self.buffer.drain(.."<think>".len());
+                    self.inside_think = true;
+                } else {
+                    // Look for potential start of <think> at the end
+                    let mut found_partial = false;
+                    let tag = "<think>";
+                    // We check from the end of the buffer, but must stay on char boundaries
+                    // Actually, for ASCII tags, we can just check the bytes.
+                    let bytes = self.buffer.as_bytes();
+                    for i in (1..tag.len()).rev() {
+                        if bytes.len() >= i {
+                            let suffix = &bytes[bytes.len() - i..];
+                            if tag.as_bytes().starts_with(suffix) {
+                                // Potential partial tag. We must not drain this part.
+                                // But we must ensure the split point is a char boundary.
+                                let split_pos = bytes.len() - i;
+                                if self.buffer.is_char_boundary(split_pos) {
+                                    let content: String = self.buffer.drain(..split_pos).collect();
+                                    if !content.is_empty() {
+                                        chunks.push(AiChunk::Content(content));
+                                    }
+                                    found_partial = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if !found_partial {
+                        let content: String = self.buffer.drain(..).collect::<String>();
+                        if !content.is_empty() {
+                            chunks.push(AiChunk::Content(content));
+                        }
+                    }
+                    break;
+                }
+            } else {
+                if let Some(end_pos) = self.buffer.find("</think>") {
+                    let reasoning: String = self.buffer.drain(..end_pos).collect();
+                    if !reasoning.is_empty() {
+                        chunks.push(AiChunk::Reasoning(reasoning));
+                    }
+                    self.buffer.drain(.."</think>".len());
+                    self.inside_think = false;
+                } else {
+                    // Look for potential start of </think> at the end
+                    let mut found_partial = false;
+                    let tag = "</think>";
+                    let bytes = self.buffer.as_bytes();
+                    for i in (1..tag.len()).rev() {
+                        if bytes.len() >= i {
+                            let suffix = &bytes[bytes.len() - i..];
+                            if tag.as_bytes().starts_with(suffix) {
+                                let split_pos = bytes.len() - i;
+                                if self.buffer.is_char_boundary(split_pos) {
+                                    let reasoning: String = self.buffer.drain(..split_pos).collect();
+                                    if !reasoning.is_empty() {
+                                        chunks.push(AiChunk::Reasoning(reasoning));
+                                    }
+                                    found_partial = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if !found_partial {
+                        let reasoning: String = self.buffer.drain(..).collect::<String>();
+                        if !reasoning.is_empty() {
+                            chunks.push(AiChunk::Reasoning(reasoning));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        chunks
+    }
 }
 
 #[async_trait]

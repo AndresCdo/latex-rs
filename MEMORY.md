@@ -25,19 +25,32 @@ This file tracks the project's state, major decisions, and progress to maintain 
 - **Built-in Undo**: Removed custom undo manager in favor of GTK 4's native `TextBuffer` undo/redo system.
 - **Centralized Constants**: All magic numbers and configuration values moved to `src/constants.rs`.
 
-## Pending Tasks
-
-- [ ] Add project-wide configuration file (settings.toml).
-- [ ] Internationalization (i18n) support.
-- [ ] Keyboard shortcuts documentation.
-- [ ] Integration tests with mock Ollama server.
+- [x] **v1.4.0 - Smart Pipeline & Reasoning Update (2026-02-03)**:
+  - **Smart Compilation**: Implemented multi-pass LaTeX compilation (up to 3 passes) for Tables of Contents and cross-references.
+  - **Biber Integration**: Automatic detection and execution of `biber` for bibliographies.
+  - **Reasoning UI**: Integrated `ThinkingFilter` to handle DeepSeek-style reasoning tags with auto-scrolling `TextView`.
+  - **UTF-8 Robustness**: Fixed "char boundary" panic in AI stream handling via safe multi-byte boundary checking.
+  - **Hallucination Prevention**: Added post-processing filters for non-standard LaTeX commands (e.g., `\keywords` fix).
+  - **GTK Optimization**: Resolved `GtkGizmo` allocation warnings by reordering window presentation logic.
+  - **Dependency Check**: Added `biber` to system requirement verification.
 
 ## Completed Milestones
 
 - [x] Initial fork and modification from `markdown-rs`.
 - [x] Integration of pdflatex-based preview (replaced KaTeX with native LaTeX compilation).
 - [x] Inline AI Assistant prompting UI with dynamic GtkRevealer.
-- [x] Standardization on `qwen3:0.6b` as default AI model.
+- [x] Standardization on `qwen2.5:0.5b` as default AI model.
+- [x] **AI Assistant feature fixes (2026-02-03)**:
+  - Implemented robust JSON stream parsing for Ollama and OpenAI providers.
+  - Added support for `reasoning` content (DeepSeek/R1 models) in UI.
+  - Optimized streaming text insertion in GTK editor using `TextMark` ($O(1)$ per chunk).
+  - Wired missing `ai_btn` and `settings_btn` signals in `src/main.rs`.
+  - Stored original selection in state to support future undo/diff features.
+- [x] **Thinking Area Fixes (2026-02-03)**:
+  - Implemented `ThinkingFilter` to extract `<think>` tags from content streams.
+  - Replaced `reasoning_label` with `TextView` for better streaming performance and auto-scrolling.
+  - Robust partial tag handling for fragmented network chunks.
+  - Added dedicated auto-scroll logic using `TextMark`.
 - [x] Centralization of agentic instructions.
 - [x] **New Features Sprint (Ctrl+Export & Ctrl+Zoom)**:
   - **PDF Export**: Added background PDF generation and file picker.

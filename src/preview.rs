@@ -33,31 +33,15 @@ impl Preview {
     fn pdflatex_capabilities() -> &'static PdfLatexCapabilities {
         static CAPABILITIES: OnceLock<PdfLatexCapabilities> = OnceLock::new();
         CAPABILITIES.get_or_init(|| {
-            let mut caps = PdfLatexCapabilities {
+            let caps = PdfLatexCapabilities {
                 supports_openin_any: false,
                 supports_openout_any: false,
             };
 
-            // Test if pdflatex supports -openin-any=p flag
-            if let Ok(output) = Command::new("pdflatex")
-                .arg("-openin-any=p")
-                .arg("--version")
-                .output()
-            {
-                caps.supports_openin_any = output.status.success();
-            }
+            // These flags are often configuration-only (texmf.cnf) or restricted in standard texlive.
+            // We'll skip testing them to avoid log noise and compatibility issues.
+            // Essential security is handled by -no-shell-escape and temp directories.
 
-            // Test if pdflatex supports -openout-any=p flag
-            if let Ok(output) = Command::new("pdflatex")
-                .arg("-openout-any=p")
-                .arg("--version")
-                .output()
-            {
-                caps.supports_openout_any = output.status.success();
-            }
-
-            // Fallback: if both tests failed (maybe pdflatex not installed or very old),
-            // we'll still have false values which is safe (flags won't be used)
             caps
         })
     }
@@ -204,40 +188,88 @@ impl Preview {
             )
         })?;
 
-        // Run pdflatex with maximum security
-        let mut cmd = self.secure_pdflatex_command(dir.path(), &input_path);
-        let output =
-            Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
-                Self::sanitize_paths(
-                    &format!("Failed to run pdflatex: {}. Is it installed?", e),
-                    &temp_dir_path,
-                    &input_path_str,
-                )
-            })?;
+        // Smart multi-pass compilation
+        let mut passes = 0;
+        let max_passes = 3;
+        let mut needs_rerun = true;
+
+        while needs_rerun && passes < max_passes {
+            passes += 1;
+
+            // Run pdflatex
+            let mut cmd = self.secure_pdflatex_command(dir.path(), &input_path);
+            let output =
+                Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
+                    Self::sanitize_paths(
+                        &format!(
+                            "Failed to run pdflatex (Pass {}): {}. Is it installed?",
+                            passes, e
+                        ),
+                        &temp_dir_path,
+                        &input_path_str,
+                    )
+                })?;
+
+            let pdf_path = dir.path().join("doc.pdf");
+            let log_path = dir.path().join("doc.log");
+            let log =
+                fs::read_to_string(&log_path).unwrap_or_else(|_| "No log file found".to_string());
+
+            // Check if we need to run Biber (only on first pass if detected)
+            if passes == 1 {
+                let bcf_path = dir.path().join("doc.bcf");
+                if bcf_path.exists() || log.contains("Please (re)run Biber") {
+                    let mut biber_cmd = Command::new("biber");
+                    biber_cmd.current_dir(dir.path()).arg("doc");
+                    // We don't fail if biber fails, just log it and continue
+                    let _ = Self::run_command_with_timeout(&mut biber_cmd, COMPILE_TIMEOUT_SECS);
+                    needs_rerun = true;
+                    continue;
+                }
+
+                if log.contains("Run LaTeX again")
+                    || log.contains("Rerun to get")
+                    || log.contains("Label(s) may have changed")
+                {
+                    needs_rerun = true;
+                    continue;
+                }
+            } else {
+                // Subsequent passes
+                if log.contains("Run LaTeX again")
+                    || log.contains("Rerun to get")
+                    || log.contains("Label(s) may have changed")
+                {
+                    needs_rerun = true;
+                } else {
+                    needs_rerun = false;
+                }
+            }
+
+            // If it's the last pass or we don't need a rerun, check if PDF exists
+            if !needs_rerun || passes == max_passes {
+                if !pdf_path.exists() {
+                    let stderr = Self::sanitize_paths(
+                        &String::from_utf8_lossy(&output.stderr),
+                        &temp_dir_path,
+                        &input_path_str,
+                    );
+                    let stdout = Self::sanitize_paths(
+                        &String::from_utf8_lossy(&output.stdout),
+                        &temp_dir_path,
+                        &input_path_str,
+                    );
+                    let log_sanitized = Self::sanitize_paths(&log, &temp_dir_path, &input_path_str);
+
+                    return Err(format!(
+                        "LaTeX failed to generate a PDF.\n\n--- LOG ---\n{}\n\n--- STDERR ---\n{}\n\n--- STDOUT ---\n{}",
+                        log_sanitized, stderr, stdout
+                    ));
+                }
+            }
+        }
 
         let pdf_path = dir.path().join("doc.pdf");
-        let log_path = dir.path().join("doc.log");
-        let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "No log file found".to_string());
-
-        // If no PDF was generated, we MUST show the log or stderr to the user
-        if !pdf_path.exists() {
-            let stderr = Self::sanitize_paths(
-                &String::from_utf8_lossy(&output.stderr),
-                &temp_dir_path,
-                &input_path_str,
-            );
-            let stdout = Self::sanitize_paths(
-                &String::from_utf8_lossy(&output.stdout),
-                &temp_dir_path,
-                &input_path_str,
-            );
-            let log_sanitized = Self::sanitize_paths(&log, &temp_dir_path, &input_path_str);
-
-            return Err(format!(
-                "LaTeX failed to generate a PDF.\n\n--- LOG ---\n{}\n\n--- STDERR ---\n{}\n\n--- STDOUT ---\n{}",
-                log_sanitized, stderr, stdout
-            ));
-        }
 
         // Convert PDF to SVG using pdftocairo
         // pdftocairo doc.pdf doc -svg -> doc-1.svg, doc-2.svg...

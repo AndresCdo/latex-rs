@@ -27,6 +27,16 @@ pub fn create_editor(style_manager: &StyleManager) -> (Buffer, View, ScrolledWin
     let editor_view = View::with_buffer(&buffer);
     editor_view.set_monospace(true);
     editor_view.set_show_line_numbers(true);
+
+    // Create a tag for AI suggestions
+    let tag_table = buffer.tag_table();
+    let ai_tag = gtk4::TextTag::builder()
+        .name("ai-suggestion")
+        .background("rgba(0, 255, 0, 0.1)")
+        .underline(gtk4::pango::Underline::Single)
+        .build();
+    tag_table.add(&ai_tag);
+
     editor_view.set_highlight_current_line(true);
     editor_view.set_auto_indent(true);
     editor_view.set_insert_spaces_instead_of_tabs(true);

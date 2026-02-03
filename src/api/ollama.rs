@@ -28,7 +28,14 @@ impl OllamaProvider {
 
 #[derive(Deserialize)]
 struct OllamaChatResponse {
-    message: Message,
+    message: OllamaMessage,
+}
+
+#[derive(Deserialize)]
+struct OllamaMessage {
+    content: String,
+    #[serde(default)]
+    reasoning: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -100,14 +107,32 @@ impl AiProvider for OllamaProvider {
             )));
         }
 
-        let stream = response.bytes_stream().map(|item| {
-            item.map_err(ApiError::HttpClient).and_then(|bytes| {
-                let chunk: OllamaChatResponse = serde_json::from_slice(&bytes).map_err(|e| {
-                    ApiError::Stream(format!("Failed to parse Ollama chunk: {}", e))
-                })?;
-                Ok(AiChunk::Content(chunk.message.content))
+        let stream = response
+            .bytes_stream()
+            .map(|item| item.map_err(ApiError::HttpClient))
+            .scan(Vec::new(), |buffer, item| {
+                let res = match item {
+                    Ok(bytes) => {
+                        buffer.extend_from_slice(&bytes);
+                        let mut chunks = Vec::new();
+                        while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                            let line: Vec<u8> = buffer.drain(..=pos).collect();
+                            if let Ok(chunk) = serde_json::from_slice::<OllamaChatResponse>(&line) {
+                                if let Some(r) = chunk.message.reasoning {
+                                    chunks.push(Ok(AiChunk::Reasoning(r)));
+                                }
+                                if !chunk.message.content.is_empty() {
+                                    chunks.push(Ok(AiChunk::Content(chunk.message.content)));
+                                }
+                            }
+                        }
+                        Some(futures::stream::iter(chunks))
+                    }
+                    Err(e) => Some(futures::stream::iter(vec![Err(e)])),
+                };
+                futures::future::ready(res)
             })
-        });
+            .flatten();
 
         Ok(Box::pin(stream))
     }

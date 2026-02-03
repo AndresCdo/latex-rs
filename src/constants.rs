@@ -66,9 +66,6 @@ pub const COMPILATION_QUEUE_BUFFER: usize = 1;
 /// HTTP request timeout for AI operations.
 pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Maximum number of retry attempts for AI patch operations.
-pub const AI_MAX_PATCH_ATTEMPTS: u32 = 3;
-
 // AI model temperature for LaTeX generation (lower = more deterministic).
 pub const AI_TEMPERATURE: f64 = 0.2;
 

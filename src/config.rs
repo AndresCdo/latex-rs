@@ -26,7 +26,7 @@ impl Default for AppConfig {
                     name: "Ollama".to_string(),
                     api_key: None,
                     base_url: "http://localhost:11434".to_string(),
-                    active_model: "qwen3:0.6b".to_string(),
+                    active_model: "qwen2.5:0.5b".to_string(),
                     system_prompt: None,
                 },
                 ProviderConfig {

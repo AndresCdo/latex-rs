@@ -64,8 +64,9 @@ brew install gtk4 libadwaita gtksourceview5 webkitgtk6
    # Start server (background)
    ollama serve &
    
-   # Pull recommended model
-   ollama pull qwen3:0.6b
+    # Pull recommended model
+    ollama pull qwen2.5:0.5b
+
    ```
 
 3. **Display**: Requires an active X11 or Wayland session for GTK to initialize.
@@ -87,7 +88,7 @@ src/
 ├── main.rs       # Application entry point and UI
 ├── constants.rs  # Centralized configuration constants
 ├── preview.rs    # LaTeX → PDF → SVG pipeline
-├── api.rs        # Ollama AI client
+├── api/          # AI provider implementations
 ├── queue.rs      # Compilation queue (thread-safe)
 └── utils.rs      # File I/O and patch utilities
 ```

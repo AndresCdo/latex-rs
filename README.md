@@ -49,7 +49,7 @@ brew install poppler
 
    ```shell
    curl -fsSL https://ollama.ai/install.sh | sh
-   ollama pull qwen3:0.6b  # Recommended lightweight model
+    ollama pull qwen2.5:0.5b  # Recommended lightweight model
    ```
 
 2. **Clone & Run**:
