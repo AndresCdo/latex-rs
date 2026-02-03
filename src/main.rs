@@ -470,6 +470,8 @@ fn build_ui(app: &Application) {
                     ai_spinner,
                     #[weak]
                     ai_status_label,
+                    #[weak]
+                    buffer,
                     async move {
                         let is_empty = text.trim().is_empty();
                         let use_full_document = is_empty || text.len() < 20000;
@@ -641,6 +643,11 @@ fn build_ui(app: &Application) {
                     ai_spinner.stop();
                     ai_status_label.set_text("AI: Ready");
                     state.borrow_mut().ai_cancellation = None;
+
+                    // Manual trigger of buffer change to force live preview update
+                    if success {
+                        buffer.emit_by_name::<()>("changed", &[]);
+                    }
                 }));
             }
         }
