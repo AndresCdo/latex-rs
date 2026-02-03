@@ -161,7 +161,17 @@ fn build_ui(app: &Application) {
     main_vbox.append(&header_bar);
 
     // AI Prompt Entry (Revealer)
-    let (ai_revealer, ai_entry, ai_spinner, ai_run_btn, reasoning_revealer, reasoning_label) = ai::create_ai_panel();
+    let (
+        ai_revealer,
+        ai_entry,
+        ai_spinner,
+        ai_run_btn,
+        reasoning_revealer,
+        reasoning_label,
+        suggestion_revealer,
+        accept_btn,
+        reject_btn,
+    ) = ai::create_ai_panel();
     main_vbox.append(&ai_revealer);
 
     // Sidebar & Content Split
@@ -183,6 +193,8 @@ fn build_ui(app: &Application) {
         ai_provider: None,
         ai_cancellation: None,
         is_ai_generating: false,
+        pending_suggestion: None,
+        original_text_selection: None,
         config,
         preview_generator: Preview::new(),
         editor_zoom: DEFAULT_ZOOM_LEVEL,
@@ -437,9 +449,20 @@ fn build_ui(app: &Application) {
         reasoning_revealer,
         #[weak]
         reasoning_label,
+        #[weak]
+        suggestion_revealer,
         move || {
             let user_instruction = ai_entry.text().to_string();
-            let text = crate::utils::buffer_to_string(buffer.upcast_ref());
+            let (start, end) = buffer.selection_bounds().unwrap_or_else(|| {
+                let cursor = buffer.iter_at_mark(&buffer.mark("insert").unwrap());
+                let mut s = cursor.clone();
+                s.backward_visible_lines(5);
+                let mut e = cursor.clone();
+                e.forward_visible_lines(5);
+                (s, e)
+            });
+
+            let selected_text = buffer.text(&start, &end, false).to_string();
             let provider_opt = state.borrow().ai_provider.clone();
 
             if let Some(provider) = provider_opt {
@@ -453,6 +476,8 @@ fn build_ui(app: &Application) {
                     let mut s = state.borrow_mut();
                     s.ai_cancellation = Some(tx);
                     s.is_ai_generating = true;
+                    s.pending_suggestion = None;
+                    s.original_text_selection = None;
                 }
 
                 ai_run_btn.set_sensitive(true);
@@ -464,6 +489,7 @@ fn build_ui(app: &Application) {
                 ai_spinner.start();
                 ai_status_label.set_text("AI: Thinking...");
                 reasoning_revealer.set_reveal_child(false);
+                suggestion_revealer.set_reveal_child(false);
 
                 let ctx = glib::MainContext::default();
                 ctx.spawn_local(glib::clone!(
@@ -477,72 +503,41 @@ fn build_ui(app: &Application) {
                     ai_status_label,
                     #[weak]
                     buffer,
+                    #[weak]
+                    suggestion_revealer,
                     async move {
-                        let is_empty = text.trim().is_empty();
-                        let use_full_document = is_empty || text.len() < 20000;
+                        let is_empty = selected_text.trim().is_empty();
 
-                    let system_prompt = state.borrow().config.get_active_provider()
-                        .and_then(|p| p.system_prompt.clone())
-                        .unwrap_or_else(|| "You are an expert LaTeX assistant. Your goal is to help users write, fix, and enhance LaTeX documents. \
-                                          \n\nCORE RULES:\n\
-                                          - Output ONLY the LaTeX code or requested data.\n\
-                                          - Use markdown blocks: ```latex ... ``` for full documents or ```diff ... ``` for updates.\n\
-                                          - Do NOT include conversational text, greetings, or explanations.\n\
-                                          - ALWAYS start full documents with '\\documentclass{article}'.\n\
-                                          - NEVER use '\\documentclass{amsmath}' or other package names as classes.\n\
-                                          - Use standard packages: amsmath, amssymb, amsthm, geometry.\n\
-                                          - NO external dependencies, NO local images, NO custom .bib files.\n\
-                                          - If you define theorems, include '\\newtheorem{theorem}{Theorem}' in the preamble.".to_string());
+                        let system_prompt = state.borrow().config.get_active_provider()
+                            .and_then(|p| p.system_prompt.clone())
+                            .unwrap_or_else(|| "You are an expert LaTeX assistant. Your goal is to help users edit specific sections of their LaTeX documents. \
+                                              \n\nCORE RULES:\n\
+                                              - Output ONLY the modified LaTeX code for the provided snippet.\n\
+                                              - Do NOT include markdown blocks like ```latex.\n\
+                                              - Do NOT include conversational text, greetings, or explanations.\n\
+                                              - Maintain the context of the surrounding code if applicable.".to_string());
 
-                    let mut messages = vec![
-                        Message {
-                            role: MessageRole::System,
-                            content: system_prompt,
-                        }
-                    ];
-
-                    if use_full_document {
-                        let user_prompt = if is_empty {
-                            if user_instruction.is_empty() {
-                                "Generate a professional LaTeX starter template using '\\documentclass{article}'.".to_string()
-                            } else {
-                                format!("Generate a professional LaTeX starter template using '\\documentclass{{article}}' based on: {}", user_instruction)
+                        let mut messages = vec![
+                            Message {
+                                role: MessageRole::System,
+                                content: system_prompt,
+                            },
+                            Message {
+                                role: MessageRole::User,
+                                content: format!("Edit the following LaTeX snippet based on these instructions: {}\n\nSnippet:\n{}", user_instruction, selected_text),
                             }
-                        } else {
-                            format!("Update the following LaTeX document (using '\\documentclass{{article}}') based on these instructions: {}\n\nDocument:\n{}", user_instruction, text)
-                        };
+                        ];
 
-                        messages.push(Message {
-                            role: MessageRole::User,
-                            content: user_prompt,
-                        });
-                    } else {
-                        messages.push(Message {
-                            role: MessageRole::User,
-                            content: format!(
-                                "Update this document based on: {}\nReturn ONLY a unified diff (diff -u) in a ```diff``` block.\n\nDocument:\n{}",
-                                user_instruction, text
-                            ),
-                        });
-                    }
+                        let mut full_content = String::new();
+                        let mut full_reasoning = String::new();
+                        let mut success = false;
 
-                    let mut success = false;
-                    let mut attempts = 0;
-                    let max_attempts = AI_MAX_PATCH_ATTEMPTS;
-
-                    while attempts < max_attempts {
-                        attempts += 1;
-
-                        match provider.chat_stream(messages.clone()).await {
+                        match provider.chat_stream(messages).await {
                             Ok(mut stream) => {
-                                let mut full_content = String::new();
-                                let mut full_reasoning = String::new();
                                 let mut cancelled = false;
-
                                 loop {
                                     tokio::select! {
                                         _ = rx.recv() => {
-                                            tracing::info!("AI Assistant: Generation cancelled by user");
                                             cancelled = true;
                                             break;
                                         }
@@ -552,14 +547,8 @@ fn build_ui(app: &Application) {
                                                     match chunk {
                                                         AiChunk::Content(c) => {
                                                             full_content.push_str(&c);
-                                                            
-                                                            // Ghost Text Update
-                                                            if use_full_document {
-                                                                let partial_latex = crate::utils::extract_latex(&full_content);
-                                                                if !partial_latex.is_empty() {
-                                                                    buffer.set_text(&partial_latex);
-                                                                }
-                                                            }
+                                                            // Highlight selection and show progress somehow?
+                                                            // For inline, we'll wait for completion to show the Diff/Suggestion.
                                                         }
                                                         AiChunk::Reasoning(r) => {
                                                             full_reasoning.push_str(&r);
@@ -572,95 +561,56 @@ fn build_ui(app: &Application) {
                                                     tracing::error!("Stream error: {}", e);
                                                     break;
                                                 }
-                                                None => break,
+                                                None => {
+                                                    success = true;
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
                                 }
 
-                                if cancelled {
-                                    break;
+                                if !cancelled && success {
+                                    state.borrow_mut().pending_suggestion = Some(full_content.clone());
+                                    // Highlight the suggestion in the editor (Temporary swap or split view?)
+                                    // Simple approach: Replace selection with suggestion, but allow UNDO/Reject.
+                                    // Professional approach: Store iterators and show Accept/Reject UI.
+                                    state.borrow_mut().original_text_selection = Some((start.clone(), end.clone()));
+                                    
+                                    // Show the suggestion in a way the user can see it.
+                                    // For now, let's insert it and highlight it.
+                                    buffer.begin_user_action();
+                                    buffer.delete(&mut start.clone(), &mut end.clone());
+                                    buffer.insert(&mut start.clone(), &full_content);
+                                    buffer.end_user_action();
+                                    
+                                    suggestion_revealer.set_reveal_child(true);
                                 }
-
-                                if use_full_document {
-                                    let cleaned = crate::utils::extract_latex(&full_content);
-                                    if !cleaned.is_empty() {
-                                        if cleaned == text {
-                                            tracing::warn!("AI returned identical content");
-                                            toast_overlay.add_toast(adw::Toast::new("AI suggests no changes needed."));
-                                            success = true;
-                                        } else {
-                                            buffer.set_text(&cleaned);
-                                            tracing::info!("AI Assistant: Document updated (Full Mode)");
-                                            success = true;
-                                        }
-                                    }
-                                } else {
-                                    match crate::utils::apply_patch(&text, &full_content) {
-                                        Ok(new_text) => {
-                                            if new_text == text {
-                                                tracing::warn!("AI diff resulted in no change");
-                                                toast_overlay.add_toast(adw::Toast::new("AI diff suggested no changes."));
-                                            } else {
-                                                buffer.set_text(&new_text);
-                                                tracing::info!("AI Assistant: Document updated (Diff Mode)");
-                                            }
-                                            success = true;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Patch failed (Attempt {}): {}", attempts, e);
-                                            if attempts < max_attempts {
-                                                messages.push(Message { role: MessageRole::Assistant, content: full_content });
-                                                messages.push(Message {
-                                                    role: MessageRole::User,
-                                                    content: "That diff was invalid. Provide the FULL enhanced LaTeX document instead within a ```latex``` block.".to_string()
-                                                });
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-                                break;
                             }
                             Err(e) => {
-                                tracing::error!("AI Connection Error: {}", e);
-                                toast_overlay.add_toast(adw::Toast::new(&format!("AI Error: {}", e)));
-                                break;
+                                tracing::error!("AI Error: {}", e);
                             }
                         }
-                    }
 
-                    if !success {
-                        toast_overlay.add_toast(adw::Toast::new("AI failed to provide a valid update."));
-                    } else {
-                        ai_entry.set_text("");
-                        if reasoning_label.text().is_empty() {
-                            ai_revealer.set_reveal_child(false);
+                        ai_run_btn.set_sensitive(true);
+                        ai_run_btn.set_label("Generate");
+                        ai_run_btn.set_icon_name("system-run-symbolic");
+                        ai_run_btn.remove_css_class("destructive-action");
+                        ai_run_btn.add_css_class("suggested-action");
+
+                        ai_spinner.stop();
+                        ai_status_label.set_text("AI: Ready");
+                        {
+                            let mut s = state.borrow_mut();
+                            s.ai_cancellation = None;
+                            s.is_ai_generating = false;
                         }
                     }
-
-                    ai_run_btn.set_sensitive(true);
-                    ai_run_btn.set_label("Generate");
-                    ai_run_btn.set_icon_name("system-run-symbolic");
-                    ai_run_btn.remove_css_class("destructive-action");
-                    ai_run_btn.add_css_class("suggested-action");
-
-                    ai_spinner.stop();
-                    ai_status_label.set_text("AI: Ready");
-                    {
-                        let mut s = state.borrow_mut();
-                        s.ai_cancellation = None;
-                        s.is_ai_generating = false;
-                    }
-
-                    // Manual trigger of buffer change to force live preview update
-                    if success {
-                        buffer.emit_by_name::<()>("changed", &[]);
-                    }
-                }));
+                ));
             }
         }
     ));
+
 
     ai_run_btn.connect_clicked(glib::clone!(
         #[strong]
@@ -675,6 +625,46 @@ fn build_ui(app: &Application) {
         trigger_ai,
         move |_| {
             trigger_ai();
+        }
+    ));
+
+    accept_btn.connect_clicked(glib::clone!(
+        #[strong]
+        state,
+        #[weak]
+        buffer,
+        #[weak]
+        suggestion_revealer,
+        #[weak]
+        ai_revealer,
+        move |_| {
+            {
+                let mut s = state.borrow_mut();
+                s.pending_suggestion = None;
+                s.original_text_selection = None;
+            }
+            suggestion_revealer.set_reveal_child(false);
+            ai_revealer.set_reveal_child(false);
+            buffer.emit_by_name::<()>("changed", &[]);
+        }
+    ));
+
+    reject_btn.connect_clicked(glib::clone!(
+        #[strong]
+        state,
+        #[weak]
+        buffer,
+        #[weak]
+        suggestion_revealer,
+        move |_| {
+            {
+                let mut s = state.borrow_mut();
+                s.pending_suggestion = None;
+                s.original_text_selection = None;
+            }
+            suggestion_revealer.set_reveal_child(false);
+            // Undo the last user action (the AI insertion)
+            buffer.undo();
         }
     ));
 
