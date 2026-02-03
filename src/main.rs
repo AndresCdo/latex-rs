@@ -182,6 +182,7 @@ fn build_ui(app: &Application) {
         current_file: None,
         ai_provider: None,
         ai_cancellation: None,
+        is_ai_generating: false,
         config,
         preview_generator: Preview::new(),
         editor_zoom: DEFAULT_ZOOM_LEVEL,
@@ -448,7 +449,11 @@ fn build_ui(app: &Application) {
                 }
 
                 let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-                state.borrow_mut().ai_cancellation = Some(tx);
+                {
+                    let mut s = state.borrow_mut();
+                    s.ai_cancellation = Some(tx);
+                    s.is_ai_generating = true;
+                }
 
                 ai_run_btn.set_sensitive(true);
                 ai_run_btn.set_label("Stop");
@@ -642,7 +647,11 @@ fn build_ui(app: &Application) {
 
                     ai_spinner.stop();
                     ai_status_label.set_text("AI: Ready");
-                    state.borrow_mut().ai_cancellation = None;
+                    {
+                        let mut s = state.borrow_mut();
+                        s.ai_cancellation = None;
+                        s.is_ai_generating = false;
+                    }
 
                     // Manual trigger of buffer change to force live preview update
                     if success {

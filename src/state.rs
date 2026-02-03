@@ -13,6 +13,8 @@ pub struct AppState {
     pub ai_provider: Option<Arc<dyn AiProvider>>,
     /// AI Cancellation channel.
     pub ai_cancellation: Option<mpsc::Sender<()>>,
+    /// Flag to indicate if AI is currently generating text.
+    pub is_ai_generating: bool,
     /// Application configuration.
     pub config: AppConfig,
     /// LaTeX preview generator.

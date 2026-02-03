@@ -43,7 +43,13 @@ pub fn connect_live_preview(
     let state = state.clone();
     let toast_overlay = toast_overlay.clone();
 
+    let state_for_changed = state.clone();
     buffer.connect_changed(move |buf| {
+        // Skip preview update if AI is currently generating text
+        if state_for_changed.borrow().is_ai_generating {
+            return;
+        }
+
         let text = buffer_to_string(buf.upcast_ref());
         if text.trim().is_empty() {
             web_view.load_html("", None::<&str>);
