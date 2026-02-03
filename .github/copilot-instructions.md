@@ -1,30 +1,32 @@
 # Copilot Instructions for latex-rs
 
 ## Project Overview
-`latex-rs` is a GTK-based LaTeX editor written in Rust. It features real-time LaTeX preview via KaTeX (rendered in high-performance WebKit2GTK) and AI assistance via local Ollama integration.
+`latex-rs` is a professional, modern LaTeX editor written in Rust using GTK 4 and Libadwaita. It features real-time LaTeX preview via a native `pdflatex` → `pdftocairo` pipeline and AI assistance via local Ollama integration.
 
 ## Architecture & Data Flow
-- **UI Framework**: GTK 3 via `gtk-rs`. UI is defined programmatically in [src/main.rs](src/main.rs).
-- **Editor**: Uses `sourceview` for LaTeX syntax highlighting. Configuration is in `utils::configure_sourceview`.
-- **Preview**: [src/preview.rs](src/preview.rs) generates an HTML string with KaTeX/Highlight.js (loaded via CDN) using the `horrorshow` macro.
-- **AI Integration**: [src/api.rs](src/api.rs) performs async POST requests to a local Ollama instance (`http://localhost:11434`).
-- **Sync/Async**: GTK operates on a synchronous main loop. Async AI calls must be handled carefully within GTK signal handlers using `glib::MainContext`.
+- **UI Framework**: GTK 4 and Libadwaita. UI is defined programmatically in [src/main.rs](src/main.rs) and modularized in `src/ui/`.
+- **Editor**: Uses `sourceview5` for advanced LaTeX syntax highlighting. Configuration is in `src/ui/editor.rs`.
+- **Preview**: [src/preview.rs](src/preview.rs) handles compilation. It produces an HTML wrapper with embedded SVGs for each page, rendered in **WebKit 6**.
+- **AI Integration**: [src/api/](src/api/) contains providers for Ollama and OpenAI-compatible APIs. It uses async streaming for real-time response insertion.
+- **Sync/Async**: GTK operates on a synchronous main loop. Async operations (AI, compilation) use `glib::MainContext::default().spawn_local` or `tokio` tasks.
 
 ## Critical Patterns & Conventions
-- **Closures & Cloning**: Use the `@strong` macro defined in [src/utils.rs](src/utils.rs) to clone GTK widgets into closures.
+- **Closures & Cloning**: Use the `glib::clone!` macro for cloning GTK widgets into closures. Use `#[weak]` for widgets that might be destroyed.
   ```rust
-  text_buffer.connect_changed(clone!(@strong web_view, preview => move |buffer| { ... }));
+  button.connect_clicked(glib::clone!(#[weak] window, #[strong] state => move |_| { ... }));
   ```
-- **HTML Templating**: [src/preview.rs](src/preview.rs) uses `horrorshow`'s `html!` macro. Match the existing structure when adding scripts or styles to the preview.
-- **Latex Detection**: Math is detected using Regex in `preview::render_latex_to_html` before being passed to the webview's KaTeX auto-render extension.
+- **Centralized Constants**: All magic numbers, timeouts, and limits must be defined in [src/constants.rs](src/constants.rs).
+- **Security**: LaTeX compilation must use `-no-shell-escape` and `-openin-any=p`. Path sanitization in [src/preview.rs](src/preview.rs) prevents leaking system info.
+- **Async Safety**: Always check if a widget is still valid (e.g., via `upgrade()`) before acting on it after an `.await`.
 
 ## Developer Workflows
-- **Building**: Requires system dependencies: `libgtk-3-dev`, `libgtksourceview-3.0-dev`, `libwebkit2gtk-4.0-dev`.
-- **Running**: `cargo run` starts the GUI. Needs Ollama running locally for AI features.
-- **Testing**: UI tests are difficult; focus on unit testing logic in [src/preview.rs](src/preview.rs) and [src/utils.rs](src/utils.rs) if possible.
+- **Building**: Requires system dependencies: `libgtk-4-dev`, `libadwaita-1-dev`, `libgtksourceview-5-dev`, `libwebkitgtk-6.0-dev`.
+- **Running**: `cargo run` starts the GUI. Needs `pdflatex` and `pdftocairo` (poppler-utils) for the preview.
+- **Testing**: Business logic in `utils.rs` and `api/` is unit tested. UI components should be verified manually via `cargo run`.
 
 ## Key Files
-- [src/main.rs](src/main.rs): Application entry point and UI signal logic.
-- [src/preview.rs](src/preview.rs): HTML/KaTeX rendering pipeline.
-- [src/api.rs](src/api.rs): Client for Ollama API.
-- [src/utils.rs](src/utils.rs): Shared helper functions and the `clone!` macro.
+- [src/main.rs](src/main.rs): Application entry point and main window assembly.
+- [src/preview.rs](src/preview.rs): Native LaTeX rendering pipeline.
+- [src/queue.rs](src/queue.rs): Sequential compilation queue to prevent race conditions.
+- [src/constants.rs](src/constants.rs): Centralized configuration.
+- [src/ui/](src/ui/): Modular UI components (AI assistant, Editor, Layout).

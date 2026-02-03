@@ -49,7 +49,7 @@ brew install poppler
 
    ```shell
    curl -fsSL https://ollama.ai/install.sh | sh
-    ollama pull qwen2.5:0.5b  # Recommended lightweight model
+   ollama pull qwen2.5:0.5b  # Recommended lightweight model
    ```
 
 2. **Clone & Run**:
@@ -60,7 +60,12 @@ brew install poppler
    cargo run --release
    ```
 
+## Project Status
+
+`latex-rs` is under active development. For a detailed history of changes, see the [CHANGELOG.md](CHANGELOG.md). For internal developer context and architectural decisions, see [MEMORY.md](MEMORY.md).
+
 ## Usage
+
 
 | Action | How |
 |--------|-----|
