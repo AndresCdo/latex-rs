@@ -5,4 +5,5 @@ pub mod editor;
 pub mod file_ops;
 pub mod header;
 pub mod layout;
+pub mod settings;
 pub mod webview;

@@ -1,4 +1,5 @@
 mod api;
+mod config;
 mod constants;
 mod preview;
 mod queue;
@@ -6,9 +7,10 @@ mod state;
 mod ui;
 mod utils;
 
-use crate::api::{AiClient, Message, MessageRole};
+use crate::api::{AiChunk, Message, MessageRole};
+use crate::config::AppConfig;
 use crate::constants::{
-    AI_MAX_PATCH_ATTEMPTS, AI_MODEL_PRIORITY, APP_ID, APP_NAME, DEFAULT_WINDOW_HEIGHT,
+    AI_MAX_PATCH_ATTEMPTS, APP_ID, APP_NAME, DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH, DEFAULT_ZOOM_LEVEL, WEBKIT_SANDBOX_DISABLE_VAR,
     WEBKIT_SANDBOX_DISABLE_VAR_MODERN, WSL_INTEROP_ENV,
 };
@@ -17,6 +19,7 @@ use crate::state::AppState;
 use crate::ui::{ai, editor, file_ops, header, layout, webview};
 use adw::prelude::*;
 use adw::{Application, ApplicationWindow};
+use futures::StreamExt;
 use gtk4::{gdk, glib, Box, Orientation};
 use sourceview5::prelude::*;
 use std::cell::RefCell;
@@ -153,12 +156,12 @@ fn build_ui(app: &Application) {
     );
 
     // Header Bar
-    let (header_bar, view_title, new_btn, open_btn, save_btn, export_btn, ai_btn, sidebar_toggle) =
+    let (header_bar, view_title, new_btn, open_btn, save_btn, export_btn, settings_btn, ai_btn, sidebar_toggle) =
         header::create_header_bar();
     main_vbox.append(&header_bar);
 
     // AI Prompt Entry (Revealer)
-    let (ai_revealer, ai_entry, ai_spinner, ai_run_btn) = ai::create_ai_panel();
+    let (ai_revealer, ai_entry, ai_spinner, ai_run_btn, reasoning_revealer, reasoning_label) = ai::create_ai_panel();
     main_vbox.append(&ai_revealer);
 
     // Sidebar & Content Split
@@ -173,9 +176,12 @@ fn build_ui(app: &Application) {
         ai_status_label,
     ) = layout::create_main_layout(&main_vbox);
 
+    let config = AppConfig::load();
+
     let state = Rc::new(RefCell::new(AppState {
         current_file: None,
-        ai_client: None,
+        ai_provider: None,
+        config,
         preview_generator: Preview::new(),
         editor_zoom: DEFAULT_ZOOM_LEVEL,
         preview_zoom: DEFAULT_ZOOM_LEVEL,
@@ -192,44 +198,67 @@ fn build_ui(app: &Application) {
         tracing::warn!(msg);
     }
 
-    // AI Initialization Check
-    let ctx = glib::MainContext::default();
-    ctx.spawn_local(glib::clone!(
+    let validate_ai = Rc::new(glib::clone!(
         #[strong]
         state,
         #[weak]
         ai_btn,
         #[weak]
         ai_status_label,
-        async move {
-            let mut final_client = None;
+        move || {
+            let ctx = glib::MainContext::default();
+            ctx.spawn_local(glib::clone!(
+                #[strong]
+                state,
+                #[weak]
+                ai_btn,
+                #[weak]
+                ai_status_label,
+                async move {
+                    ai_btn.set_sensitive(false);
+                    ai_status_label.set_text("AI: Initializing...");
 
-            for model_name in AI_MODEL_PRIORITY {
-                let client = AiClient::new(model_name).ok();
-                if let Some(c) = client {
-                    if c.check_model().await.is_ok() {
-                        final_client = Some(c);
-                        break;
+                    let config = state.borrow().config.clone();
+                    let active_config = config.get_active_provider();
+
+                    if let Some(p_config) = active_config {
+                        let provider = crate::api::create_provider(p_config);
+                        match provider.check_availability().await {
+                            Ok(_) => {
+                                let name = provider.name().to_string();
+                                let model = p_config.active_model.clone();
+                                state.borrow_mut().ai_provider = Some(provider);
+                                ai_btn.set_sensitive(true);
+                                ai_btn.set_tooltip_text(Some(&format!(
+                                    "AI ready (Provider: {}, Model: {})",
+                                    name, model
+                                )));
+                                ai_status_label.set_text(&format!("AI: Ready ({})", model));
+                                tracing::info!(
+                                    "AI Assistant initialized: {} with model {}",
+                                    name,
+                                    model
+                                );
+                            }
+                            Err(e) => {
+                                ai_btn.set_tooltip_text(Some(&format!(
+                                    "AI provider unavailable: {}. Check settings.",
+                                    e
+                                )));
+                                ai_status_label.set_text("AI: Unavailable");
+                                tracing::error!("AI check failed: {}", e);
+                            }
+                        }
+                    } else {
+                        ai_status_label.set_text("AI: Not Configured");
                     }
                 }
-            }
-
-            if let Some(client) = final_client {
-                let model_name = client.model.clone();
-                state.borrow_mut().ai_client = Some(client);
-                ai_btn.set_sensitive(true);
-                ai_btn.set_tooltip_text(Some(&format!("AI ready (Model: {})", model_name)));
-                ai_status_label.set_text(&format!("AI: Ready ({})", model_name));
-                tracing::info!("AI Assistant initialized with model: {}", model_name);
-            } else {
-                ai_btn.set_tooltip_text(Some(
-                    "Ollama not found or models missing. AI features disabled.",
-                ));
-                ai_status_label.set_text("AI: Unavailable");
-                tracing::warn!("AI Assistant could not be initialized.");
-            }
+            ));
         }
     ));
+
+    // AI Initialization Check
+    validate_ai();
 
     // Sidebar logic
     sidebar_toggle.connect_active_notify(glib::clone!(
@@ -353,7 +382,7 @@ fn build_ui(app: &Application) {
         &word_count_label,
     );
 
-    // Logic: AI Assistant Toggle
+    // AI Assistant Toggle
     ai_btn.connect_clicked(glib::clone!(
         #[weak]
         ai_revealer,
@@ -368,8 +397,24 @@ fn build_ui(app: &Application) {
         }
     ));
 
+    settings_btn.connect_clicked(glib::clone!(
+        #[strong]
+        state,
+        #[weak]
+        window,
+        #[strong]
+        validate_ai,
+        move |_| {
+            ui::settings::show_settings(
+                window.upcast_ref(),
+                state.clone(),
+                Some(validate_ai.clone()),
+            );
+        }
+    ));
+
     // Common AI logic
-    let trigger_ai = glib::clone!(
+    let trigger_ai = Rc::new(glib::clone!(
         #[strong]
         state,
         #[weak]
@@ -386,21 +431,25 @@ fn build_ui(app: &Application) {
         ai_revealer,
         #[weak]
         ai_status_label,
+        #[weak]
+        reasoning_revealer,
+        #[weak]
+        reasoning_label,
         move || {
             let user_instruction = ai_entry.text().to_string();
             let text = crate::utils::buffer_to_string(buffer.upcast_ref());
-            let client_opt = state.borrow().ai_client.clone();
+            let provider_opt = state.borrow().ai_provider.clone();
 
-            if let Some(client) = client_opt {
+            if let Some(provider) = provider_opt {
                 ai_run_btn.set_sensitive(false);
                 ai_spinner.start();
                 ai_status_label.set_text("AI: Thinking...");
+                reasoning_revealer.set_reveal_child(false);
 
                 let ctx = glib::MainContext::default();
                 ctx.spawn_local(async move {
-                    // ... (spawn_local contents stay the same)
                     let is_empty = text.trim().is_empty();
-                    let use_full_document = is_empty || text.len() < 20000; // Prefer full document for <20KB files
+                    let use_full_document = is_empty || text.len() < 20000;
 
                     let mut messages = vec![
                         Message {
@@ -434,7 +483,6 @@ fn build_ui(app: &Application) {
                             content: user_prompt,
                         });
                     } else {
-                        // For large documents, try unified diff to save tokens/time
                         messages.push(Message {
                             role: MessageRole::User,
                             content: format!(
@@ -451,15 +499,42 @@ fn build_ui(app: &Application) {
                     while attempts < max_attempts {
                         attempts += 1;
 
-                        match client.chat(messages.clone()).await {
-                            Ok(response) => {
+                        match provider.chat_stream(messages.clone()).await {
+                            Ok(mut stream) => {
+                                let mut full_content = String::new();
+                                let mut full_reasoning = String::new();
+
+                                while let Some(chunk_result) = stream.next().await {
+                                    match chunk_result {
+                                        Ok(chunk) => {
+                                            match chunk {
+                                                AiChunk::Content(c) => {
+                                                    full_content.push_str(&c);
+                                                    // We don't update buffer in real-time for diff/full extraction logic yet,
+                                                    // but we could show a preview or just wait for completion.
+                                                    // For now, let's just collect it.
+                                                }
+                                                AiChunk::Reasoning(r) => {
+                                                    full_reasoning.push_str(&r);
+                                                    reasoning_label.set_text(&full_reasoning);
+                                                    reasoning_revealer.set_reveal_child(true);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Stream error: {}", e);
+                                            break;
+                                        }
+                                    }
+                                }
+
                                 if use_full_document {
-                                    let cleaned = crate::utils::extract_latex(&response);
+                                    let cleaned = crate::utils::extract_latex(&full_content);
                                     if !cleaned.is_empty() {
                                         if cleaned == text {
                                             tracing::warn!("AI returned identical content");
                                             toast_overlay.add_toast(adw::Toast::new("AI suggests no changes needed."));
-                                            success = true; // Technically handled
+                                            success = true;
                                         } else {
                                             buffer.set_text(&cleaned);
                                             tracing::info!("AI Assistant: Document updated (Full Mode)");
@@ -467,8 +542,7 @@ fn build_ui(app: &Application) {
                                         }
                                     }
                                 } else {
-                                    // Try applying patch
-                                    match crate::utils::apply_patch(&text, &response) {
+                                    match crate::utils::apply_patch(&text, &full_content) {
                                         Ok(new_text) => {
                                             if new_text == text {
                                                 tracing::warn!("AI diff resulted in no change");
@@ -482,14 +556,11 @@ fn build_ui(app: &Application) {
                                         Err(e) => {
                                             tracing::error!("Patch failed (Attempt {}): {}", attempts, e);
                                             if attempts < max_attempts {
-                                                // Ask for full document as fallback
-                                                messages.push(Message { role: MessageRole::Assistant, content: response });
+                                                messages.push(Message { role: MessageRole::Assistant, content: full_content });
                                                 messages.push(Message {
                                                     role: MessageRole::User,
                                                     content: "That diff was invalid. Provide the FULL enhanced LaTeX document instead within a ```latex``` block.".to_string()
                                                 });
-                                                // For next attempt, we switch to full document mode
-                                                // but keep the loop going
                                                 continue;
                                             }
                                         }
@@ -509,7 +580,9 @@ fn build_ui(app: &Application) {
                         toast_overlay.add_toast(adw::Toast::new("AI failed to provide a valid update."));
                     } else {
                         ai_entry.set_text("");
-                        ai_revealer.set_reveal_child(false);
+                        if reasoning_label.text().is_empty() {
+                            ai_revealer.set_reveal_child(false);
+                        }
                     }
 
                     ai_run_btn.set_sensitive(true);
@@ -518,7 +591,7 @@ fn build_ui(app: &Application) {
                 });
             }
         }
-    );
+    ));
 
     ai_run_btn.connect_clicked(glib::clone!(
         #[strong]

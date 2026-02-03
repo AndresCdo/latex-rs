@@ -11,6 +11,7 @@ pub fn create_header_bar() -> (
     Button,
     Button,
     Button,
+    Button,
     ToggleButton,
 ) {
     let header_bar = HeaderBar::new();
@@ -45,6 +46,11 @@ pub fn create_header_bar() -> (
     header_bar.pack_start(&left_box);
 
     // Right actions
+    let settings_btn = Button::builder()
+        .icon_name("emblem-system-symbolic")
+        .tooltip_text("Settings")
+        .build();
+
     let ai_btn = Button::builder()
         .icon_name("starred-symbolic")
         .tooltip_text("AI Assistant")
@@ -59,6 +65,7 @@ pub fn create_header_bar() -> (
         .build();
 
     header_bar.pack_end(&sidebar_toggle);
+    header_bar.pack_end(&settings_btn);
     header_bar.pack_end(&ai_btn);
 
     (
@@ -68,6 +75,7 @@ pub fn create_header_bar() -> (
         open_btn,
         save_btn,
         export_btn,
+        settings_btn,
         ai_btn,
         sidebar_toggle,
     )

@@ -441,10 +441,4 @@ End
         assert!(result.contains("\\usepackage{amsmath}"));
         assert!(result.contains("\\usepackage{amssymb}"));
     }
-
-    // =========================================================================
-    // Tests for buffer_to_string (indirect, as it requires GTK)
-    // =========================================================================
-    // Note: buffer_to_string requires GTK initialization which is not
-    // available in unit tests. Integration tests would be needed for this.
 }
