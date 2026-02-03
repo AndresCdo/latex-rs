@@ -1,8 +1,4 @@
-name: Rust CI/CD
-
-# Build status: Known issue with glib 0.18.5 trait bounds on some Rust versions.
-
-# Workaround: Beta channel is allowed to fail. Stable must pass.
+name: Rust CI
 
 on:
   push:
@@ -11,13 +7,8 @@ on:
       - 'src/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - '.github/workflows/rust.yml'
   pull_request:
     branches: [ "master", "dev" ]
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,9 +20,9 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  lint:
-    name: Lint (Clippy)
-    runs-on: ubuntu-latest
+  check:
+    name: Quality Check
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,31 +30,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-target-
+          components: clippy, rustfmt
 
       - name: Install system dependencies
         run: |
@@ -73,55 +40,27 @@ jobs:
             libgtk-4-dev \
             libadwaita-1-dev \
             libgtksourceview-5-dev \
-            libwebkitgtk-6.0-dev \
-            libgraphene-1.0-dev
+            libwebkitgtk-6.0-dev
 
-      - name: Export PKG_CONFIG_PATH
-        run: echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
 
-      - name: Run clippy
+      - name: Lint (Clippy)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Run Tests
+        run: cargo test --verbose
+
   build:
-    name: Build
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust: [ stable, beta ]
-      fail-fast: false
-    continue-on-error: ${{ matrix.rust == 'beta' }}
+    name: Build Verification
+    needs: check
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-target-${{ matrix.rust }}-
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install system dependencies
         run: |
@@ -131,80 +70,7 @@ jobs:
             libgtk-4-dev \
             libadwaita-1-dev \
             libgtksourceview-5-dev \
-            libwebkitgtk-6.0-dev \
-            libgraphene-1.0-dev
-
-      - name: Export PKG_CONFIG_PATH
-        run: echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
-
-      - name: Build (debug)
-        run: cargo build --verbose
+            libwebkitgtk-6.0-dev
 
       - name: Build (release)
         run: cargo build --release --verbose
-
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-target-
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libgtk-4-dev \
-            libadwaita-1-dev \
-            libgtksourceview-5-dev \
-            libwebkitgtk-6.0-dev \
-            libgraphene-1.0-dev
-
-      - name: Export PKG_CONFIG_PATH
-        run: echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
-
-      - name: Run tests
-        run: cargo test --verbose
-
-  format:
-    name: Code Format
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Check code formatting
-        run: cargo fmt --all -- --check

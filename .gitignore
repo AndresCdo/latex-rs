@@ -15,7 +15,6 @@
 # Ignore Cargo-specific files
 /.cargo
 /.rustup
-Cargo.lock
 
 # Ignore IDE/editor-specific files
 /.idea/
