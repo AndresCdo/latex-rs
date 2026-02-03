@@ -29,10 +29,6 @@ pub const DEFAULT_WINDOW_HEIGHT: i32 = 800;
 // Editor Configuration
 // ============================================================================
 
-/// Debounce delay for live preview updates (milliseconds).
-/// Prevents excessive recompilation while typing.
-pub const PREVIEW_DEBOUNCE_MS: u64 = 250;
-
 // ============================================================================
 // LaTeX Compilation
 // ============================================================================
@@ -75,6 +71,15 @@ pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Maximum number of retry attempts for AI patch operations.
 pub const AI_MAX_PATCH_ATTEMPTS: u32 = 3;
 
+/// AI model temperature for LaTeX generation (lower = more deterministic).
+pub const AI_TEMPERATURE: f64 = 0.2;
+
+/// AI model top_p for nucleus sampling.
+pub const AI_TOP_P: f64 = 0.9;
+
+/// AI model random seed for reproducible outputs.
+pub const AI_SEED: u64 = 42;
+
 /// List of AI models to try in order of preference.
 pub const AI_MODEL_PRIORITY: &[&str] = &["qwen3:0.6b", "qwen2.5-coder:3b", "llama3:8b", "mistral"];
 
@@ -84,9 +89,6 @@ pub const AI_MODEL_PRIORITY: &[&str] = &["qwen3:0.6b", "qwen2.5-coder:3b", "llam
 
 /// Environment variable to check for WSL detection.
 pub const WSL_INTEROP_ENV: &str = "WSL_INTEROP";
-
-/// Environment variable to check for container runtime.
-pub const CONTAINER_ENV: &str = "container";
 
 /// WebKit sandbox disable environment variable (legacy/broad).
 pub const WEBKIT_SANDBOX_DISABLE_VAR: &str = "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS";

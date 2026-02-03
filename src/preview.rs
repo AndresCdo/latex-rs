@@ -6,10 +6,17 @@ use horrorshow::{html, Raw};
 use html_escape::encode_text;
 use std::fs;
 use std::process::Command;
+use std::sync::OnceLock;
 use tempfile::tempdir;
 
 #[derive(Clone, Debug)]
 pub struct Preview;
+
+#[derive(Debug)]
+struct PdfLatexCapabilities {
+    supports_openin_any: bool,
+    supports_openout_any: bool,
+}
 
 impl Default for Preview {
     fn default() -> Self {
@@ -20,6 +27,71 @@ impl Default for Preview {
 impl Preview {
     pub fn new() -> Self {
         Preview
+    }
+
+    /// Detects pdflatex capabilities (supported security flags)
+    fn pdflatex_capabilities() -> &'static PdfLatexCapabilities {
+        static CAPABILITIES: OnceLock<PdfLatexCapabilities> = OnceLock::new();
+        CAPABILITIES.get_or_init(|| {
+            let mut caps = PdfLatexCapabilities {
+                supports_openin_any: false,
+                supports_openout_any: false,
+            };
+
+            // Test if pdflatex supports -openin-any=p flag
+            if let Ok(output) = Command::new("pdflatex")
+                .arg("-openin-any=p")
+                .arg("--version")
+                .output()
+            {
+                caps.supports_openin_any = output.status.success();
+            }
+
+            // Test if pdflatex supports -openout-any=p flag
+            if let Ok(output) = Command::new("pdflatex")
+                .arg("-openout-any=p")
+                .arg("--version")
+                .output()
+            {
+                caps.supports_openout_any = output.status.success();
+            }
+
+            // Fallback: if both tests failed (maybe pdflatex not installed or very old),
+            // we'll still have false values which is safe (flags won't be used)
+            caps
+        })
+    }
+
+    /// Creates a secure pdflatex command with appropriate security flags
+    fn secure_pdflatex_command(
+        &self,
+        temp_dir: &std::path::Path,
+        input_path: &std::path::Path,
+    ) -> Command {
+        let caps = Self::pdflatex_capabilities();
+        let mut cmd = Command::new("pdflatex");
+
+        // Essential security: disable shell escape
+        cmd.arg("-no-shell-escape");
+
+        // Restrict file access if supported
+        if caps.supports_openin_any {
+            cmd.arg("-openin-any=p");
+        }
+        if caps.supports_openout_any {
+            cmd.arg("-openout-any=p");
+        }
+
+        // Run in temp directory to further restrict access
+        cmd.current_dir(temp_dir);
+
+        // Standard arguments
+        cmd.arg("-interaction=nonstopmode")
+            .arg("-output-directory")
+            .arg(temp_dir)
+            .arg(input_path);
+
+        cmd
     }
 
     fn sanitize_paths(text: &str, temp_dir: &str, input_path: &str) -> String {
@@ -67,6 +139,7 @@ impl Preview {
     }
 
     /// Compiles LaTeX string directly to a PDF file at the specified destination.
+    #[allow(dead_code)]
     pub fn export_pdf(&self, latex: &str, destination: &std::path::Path) -> Result<(), String> {
         // Security: Validate input size
         if latex.len() > MAX_LATEX_SIZE_BYTES {
@@ -86,20 +159,16 @@ impl Preview {
             )
         })?;
 
-        let mut cmd = Command::new("pdflatex");
-        cmd.arg("-no-shell-escape")
-            .arg("-interaction=nonstopmode")
-            .arg("-output-directory")
-            .arg(dir.path())
-            .arg(&input_path);
+        let mut cmd = self.secure_pdflatex_command(dir.path(), &input_path);
 
-        let output = Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
-            Self::sanitize_paths(
-                &format!("Failed to run pdflatex: {}", e),
-                &temp_dir_path,
-                &input_path_str,
-            )
-        })?;
+        let output =
+            Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
+                Self::sanitize_paths(
+                    &format!("Failed to run pdflatex: {}", e),
+                    &temp_dir_path,
+                    &input_path_str,
+                )
+            })?;
 
         let pdf_path = dir.path().join("doc.pdf");
         if !pdf_path.exists() {
@@ -107,7 +176,8 @@ impl Preview {
             return Err(format!("LaTeX failed to generate a PDF.\n{}", stderr));
         }
 
-        fs::copy(&pdf_path, destination).map_err(|e| format!("Failed to copy PDF to destination: {}", e))?;
+        fs::copy(&pdf_path, destination)
+            .map_err(|e| format!("Failed to copy PDF to destination: {}", e))?;
         Ok(())
     }
 
@@ -134,22 +204,16 @@ impl Preview {
             )
         })?;
 
-        // Run pdflatex with security flags:
-        // -no-shell-escape: Prevent command execution via \write18
-        // Note: -openin-any=p removed as it is not supported by all pdflatex versions
-        let mut cmd = Command::new("pdflatex");
-        cmd.arg("-no-shell-escape")
-            .arg("-interaction=nonstopmode")
-            .arg("-output-directory")
-            .arg(dir.path())
-            .arg(&input_path);
-        let output = Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
-            Self::sanitize_paths(
-                &format!("Failed to run pdflatex: {}. Is it installed?", e),
-                &temp_dir_path,
-                &input_path_str,
-            )
-        })?;
+        // Run pdflatex with maximum security
+        let mut cmd = self.secure_pdflatex_command(dir.path(), &input_path);
+        let output =
+            Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
+                Self::sanitize_paths(
+                    &format!("Failed to run pdflatex: {}. Is it installed?", e),
+                    &temp_dir_path,
+                    &input_path_str,
+                )
+            })?;
 
         let pdf_path = dir.path().join("doc.pdf");
         let log_path = dir.path().join("doc.log");
@@ -181,16 +245,17 @@ impl Preview {
         cmd.arg("-svg")
             .arg(&pdf_path)
             .arg(dir.path().join("output"));
-        let cairo_output = Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
-            Self::sanitize_paths(
-                &format!(
-                    "Failed to run pdftocairo: {}. Is poppler-utils installed?",
-                    e
-                ),
-                &temp_dir_path,
-                &input_path_str,
-            )
-        })?;
+        let cairo_output =
+            Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
+                Self::sanitize_paths(
+                    &format!(
+                        "Failed to run pdftocairo: {}. Is poppler-utils installed?",
+                        e
+                    ),
+                    &temp_dir_path,
+                    &input_path_str,
+                )
+            })?;
 
         let cairo_stderr = String::from_utf8_lossy(&cairo_output.stderr);
         if !cairo_output.status.success() {

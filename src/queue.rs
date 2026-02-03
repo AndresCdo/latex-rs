@@ -95,7 +95,9 @@ mod tests {
     struct MockPreview;
     #[allow(dead_code)]
     impl MockPreview {
-        fn new() -> Self { MockPreview }
+        fn new() -> Self {
+            MockPreview
+        }
         fn render(&self, latex: &str) -> String {
             format!("Rendered: {}", latex)
         }
@@ -106,8 +108,8 @@ mod tests {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
             let _preview = Preview::new(); // Use real preview but it requires external commands
-            // For simplicity, we'll skip actual preview testing in unit tests
-            // The queue logic is tested in integration tests
+                                           // For simplicity, we'll skip actual preview testing in unit tests
+                                           // The queue logic is tested in integration tests
         });
     }
 }

@@ -1,4 +1,4 @@
-use crate::constants::{AI_REQUEST_TIMEOUT, OLLAMA_BASE_URL};
+use crate::constants::{AI_REQUEST_TIMEOUT, AI_SEED, AI_TEMPERATURE, AI_TOP_P, OLLAMA_BASE_URL};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -108,9 +108,9 @@ impl AiClient {
                 "messages": messages,
                 "stream": false,
                 "options": {
-                    "temperature": 0.2, // Low temperature for consistent LaTeX generation
-                    "top_p": 0.9,
-                    "seed": 42
+                    "temperature": AI_TEMPERATURE,
+                    "top_p": AI_TOP_P,
+                    "seed": AI_SEED
                 }
             }))
             .send()

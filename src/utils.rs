@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use gtk4::prelude::*;
+use regex::Regex;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::OnceLock;
 
 pub fn buffer_to_string(buffer: &gtk4::TextBuffer) -> String {
     let (start, end) = buffer.bounds();
@@ -66,10 +68,16 @@ pub fn save_file(filename: &Path, text_buffer: &gtk4::TextBuffer) -> Result<()> 
     Ok(())
 }
 
+fn section_regex() -> &'static Regex {
+    static SECTION_REGEX: OnceLock<Regex> = OnceLock::new();
+    SECTION_REGEX
+        .get_or_init(|| Regex::new(r"\\(section|subsection|subsubsection)\*?\{([^}]+)\}").unwrap())
+}
+
 pub fn extract_sections(text: &str) -> Vec<(String, i32)> {
     let mut sections = Vec::new();
-    let re = regex::Regex::new(r"\\(section|subsection|subsubsection)\*?\{([^}]+)\}").unwrap();
-    
+    let re = section_regex();
+
     for (i, line) in text.lines().enumerate() {
         if let Some(caps) = re.captures(line) {
             let level = &caps[1];
@@ -173,14 +181,26 @@ fn sanitize_latex(latex: &str) -> String {
     {
         tracing::warn!("AI hallucinated document class; correcting to 'article'");
         sanitized = sanitized
-            .replace("\\documentclass{amsmath}", "\\documentclass{article}\n\\usepackage{amsmath}")
-            .replace("\\documentclass{amssymb}", "\\documentclass{article}\n\\usepackage{amssymb}")
-            .replace("\\documentclass{geometry}", "\\documentclass{article}\n\\usepackage{geometry}");
+            .replace(
+                "\\documentclass{amsmath}",
+                "\\documentclass{article}\n\\usepackage{amsmath}",
+            )
+            .replace(
+                "\\documentclass{amssymb}",
+                "\\documentclass{article}\n\\usepackage{amssymb}",
+            )
+            .replace(
+                "\\documentclass{geometry}",
+                "\\documentclass{article}\n\\usepackage{geometry}",
+            );
     }
 
     // 3. Ensure it starts with \documentclass if it looks like a full document
     if sanitized.contains("\\begin{document}") && !sanitized.contains("\\documentclass") {
-        sanitized = format!("\\documentclass{{article}}\n\\usepackage{{amsmath}}\n\\usepackage{{amssymb}}\n\n{}", sanitized);
+        sanitized = format!(
+            "\\documentclass{{article}}\n\\usepackage{{amsmath}}\n\\usepackage{{amssymb}}\n\n{}",
+            sanitized
+        );
     }
 
     sanitized.trim().to_string()
@@ -386,6 +406,40 @@ Done!"#;
         assert!(result.is_ok());
         let patched = result.unwrap();
         assert!(!patched.contains("line2"));
+    }
+
+    #[test]
+    fn test_extract_sections() {
+        let text = r#"\section{Intro}
+Some text
+\subsection{Sub}
+More text
+\subsubsection{SubSub}
+End
+\section*{Starred}"#;
+        let sections = extract_sections(text);
+        assert_eq!(sections.len(), 4);
+        assert_eq!(sections[0], ("Intro".to_string(), 0));
+        assert_eq!(sections[1], ("  Sub".to_string(), 2));
+        assert_eq!(sections[2], ("    SubSub".to_string(), 4));
+        assert_eq!(sections[3], ("Starred".to_string(), 6));
+    }
+
+    #[test]
+    fn test_sanitize_latex_hallucinations() {
+        let text = "\\documentclass{amsmath}\n\\begin{document}\nTest\n\\end{document}";
+        let result = sanitize_latex(text);
+        assert!(result.contains("\\documentclass{article}"));
+        assert!(result.contains("\\usepackage{amsmath}"));
+    }
+
+    #[test]
+    fn test_sanitize_latex_missing_preamble() {
+        let text = "\\begin{document}\nTest\n\\end{document}";
+        let result = sanitize_latex(text);
+        assert!(result.contains("\\documentclass{article}"));
+        assert!(result.contains("\\usepackage{amsmath}"));
+        assert!(result.contains("\\usepackage{amssymb}"));
     }
 
     // =========================================================================

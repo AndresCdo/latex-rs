@@ -2,32 +2,25 @@ mod api;
 mod constants;
 mod preview;
 mod queue;
+mod state;
+mod ui;
 mod utils;
 
 use crate::api::{AiClient, Message, MessageRole};
 use crate::constants::{
-    AI_MAX_PATCH_ATTEMPTS, AI_MODEL_PRIORITY, APP_ID, APP_NAME, CONTAINER_ENV,
-    DEFAULT_EDITOR_FONT, DEFAULT_EDITOR_FONT_SIZE, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH,
-    DEFAULT_ZOOM_LEVEL, MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, PREVIEW_DEBOUNCE_MS,
-    WEBKIT_SANDBOX_DISABLE_VAR, WEBKIT_SANDBOX_DISABLE_VAR_MODERN, WSL_INTEROP_ENV, ZOOM_STEP,
+    AI_MAX_PATCH_ATTEMPTS, AI_MODEL_PRIORITY, APP_ID, APP_NAME, DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH, DEFAULT_ZOOM_LEVEL, WEBKIT_SANDBOX_DISABLE_VAR,
+    WEBKIT_SANDBOX_DISABLE_VAR_MODERN, WSL_INTEROP_ENV,
 };
 use crate::preview::Preview;
-use crate::queue::CompilationQueue;
-use crate::utils::{open_file, save_file};
+use crate::state::AppState;
+use crate::ui::{ai, editor, file_ops, header, layout, webview};
 use adw::prelude::*;
-use adw::{Application, ApplicationWindow, HeaderBar, WindowTitle};
-use gtk4::{
-    gdk, glib, Box, Button, Entry, EventControllerKey, EventControllerScroll,
-    EventControllerScrollFlags, ListBox, Orientation, Paned, PropagationPhase, Revealer,
-    RevealerTransitionType, ScrolledWindow, Spinner,
-};
+use adw::{Application, ApplicationWindow};
+use gtk4::{gdk, glib, Box, Orientation};
 use sourceview5::prelude::*;
-use sourceview5::{Buffer, LanguageManager, View, StyleSchemeManager};
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
-use webkit6::prelude::*;
-use webkit6::WebView;
 
 /// Detects if running in an environment that requires WebKit sandbox to be disabled.
 /// Returns true for WSL, containers, or environments without proper namespace support.
@@ -35,12 +28,6 @@ fn needs_webkit_sandbox_disabled() -> bool {
     // Check for WSL (Windows Subsystem for Linux)
     if std::env::var(WSL_INTEROP_ENV).is_ok() {
         tracing::info!("WSL detected - WebKit sandbox will be disabled");
-        return true;
-    }
-
-    // Check for container runtime (Docker, Podman, etc.)
-    if std::env::var(CONTAINER_ENV).is_ok() {
-        tracing::info!("Container environment detected - WebKit sandbox will be disabled");
         return true;
     }
 
@@ -69,33 +56,41 @@ fn needs_webkit_sandbox_disabled() -> bool {
     if let Ok(version) = std::fs::read_to_string("/proc/version") {
         let version_lower = version.to_lowercase();
         if version_lower.contains("microsoft") || version_lower.contains("wsl") {
-             tracing::info!("/proc/version indicates WSL - WebKit sandbox will be disabled");
-             return true;
+            tracing::info!("/proc/version indicates WSL - WebKit sandbox will be disabled");
+            return true;
         }
     }
 
     // Check for disabled user namespaces (common on Debian/Arch)
     if let Ok(content) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
         if content.trim() == "0" {
-            tracing::info!("Unprivileged user namespaces are disabled - WebKit sandbox will be disabled");
+            tracing::info!(
+                "Unprivileged user namespaces are disabled - WebKit sandbox will be disabled"
+            );
             return true;
         }
     }
 
     // Check for Ubuntu 24.04+ AppArmor user namespace restrictions
-    if let Ok(content) = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") {
+    if let Ok(content) =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    {
         if content.trim() == "1" {
-            tracing::info!("AppArmor user namespace restrictions detected - WebKit sandbox will be disabled");
+            tracing::info!(
+                "AppArmor user namespace restrictions detected - WebKit sandbox will be disabled"
+            );
             return true;
         }
     }
 
     // Check cgroups for container indicators
     if let Ok(cgroups) = std::fs::read_to_string("/proc/1/cgroup") {
-         if cgroups.contains("docker") || cgroups.contains("kubepods") || cgroups.contains("lxc") {
-             tracing::info!("Cgroups indicate container environment - WebKit sandbox will be disabled");
-             return true;
-         }
+        if cgroups.contains("docker") || cgroups.contains("kubepods") || cgroups.contains("lxc") {
+            tracing::info!(
+                "Cgroups indicate container environment - WebKit sandbox will be disabled"
+            );
+            return true;
+        }
     }
 
     false
@@ -126,16 +121,6 @@ async fn main() -> glib::ExitCode {
     app.run()
 }
 
-struct AppState {
-    current_file: Option<PathBuf>,
-    ai_client: Option<AiClient>,
-    preview_generator: Preview,
-    editor_zoom: f64,
-    preview_zoom: f64,
-}
-
-
-
 fn build_ui(app: &Application) {
     let window = ApplicationWindow::builder()
         .application(app)
@@ -152,13 +137,15 @@ fn build_ui(app: &Application) {
 
     // Custom CSS for better UI
     let css_provider = gtk4::CssProvider::new();
-    css_provider.load_from_string("
+    css_provider.load_from_string(
+        "
         .dim-label { opacity: 0.7; font-size: 0.9em; }
         .sidebar { border-right: 1px solid alpha(@borders, 0.5); background: @view_bg_color; }
         .linked button { border-radius: 0; }
         .linked button:first-child { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
         .linked button:last-child { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
-    ");
+    ",
+    );
     gtk4::style_context_add_provider_for_display(
         &gdk::Display::default().expect("Could not connect to a display."),
         &css_provider,
@@ -166,127 +153,25 @@ fn build_ui(app: &Application) {
     );
 
     // Header Bar
-    let header_bar = HeaderBar::new();
-    let view_title = WindowTitle::new("LaTeX.rs Editor", "");
-    header_bar.set_title_widget(Some(&view_title));
-
-    // Left actions group
-    let left_box = Box::new(Orientation::Horizontal, 0);
-    left_box.add_css_class("linked");
-
-    let new_btn = Button::builder()
-        .icon_name("document-new-symbolic")
-        .tooltip_text("New Document")
-        .build();
-    let open_btn = Button::builder()
-        .icon_name("document-open-symbolic")
-        .tooltip_text("Open File")
-        .build();
-    let save_btn = Button::builder()
-        .icon_name("document-save-symbolic")
-        .tooltip_text("Save File")
-        .build();
-    let export_btn = Button::builder()
-        .icon_name("document-send-symbolic")
-        .tooltip_text("Export PDF")
-        .build();
-
-    left_box.append(&new_btn);
-    left_box.append(&open_btn);
-    left_box.append(&save_btn);
-    left_box.append(&export_btn);
-    header_bar.pack_start(&left_box);
-
-    // Right actions
-    let ai_btn = Button::builder()
-        .icon_name("starred-symbolic") // 'stars' or 'starred' are common fallbacks for AI/Magic
-        .tooltip_text("AI Assistant")
-        .sensitive(false)
-        .build();
-    ai_btn.add_css_class("suggested-action");
-
-    let sidebar_toggle = gtk4::ToggleButton::builder()
-        .icon_name("sidebar-show-symbolic")
-        .tooltip_text("Toggle Outline")
-        .active(true)
-        .build();
-
-    header_bar.pack_end(&sidebar_toggle);
-    header_bar.pack_end(&ai_btn);
+    let (header_bar, view_title, new_btn, open_btn, save_btn, export_btn, ai_btn, sidebar_toggle) =
+        header::create_header_bar();
     main_vbox.append(&header_bar);
 
     // AI Prompt Entry (Revealer)
-    let ai_revealer = Revealer::builder()
-        .transition_type(RevealerTransitionType::SlideDown)
-        .build();
-
-    let ai_entry_box = Box::new(Orientation::Horizontal, 6);
-    ai_entry_box.set_margin_start(12);
-    ai_entry_box.set_margin_end(12);
-    ai_entry_box.set_margin_top(6);
-    ai_entry_box.set_margin_bottom(6);
-
-    let ai_entry = Entry::builder()
-        .placeholder_text("Tell AI what to do (e.g., 'Add a table of contents', 'Fix grammar')...")
-        .hexpand(true)
-        .build();
-
-    let ai_spinner = Spinner::new();
-    let ai_run_btn = Button::builder()
-        .label("Generate")
-        .icon_name("system-run-symbolic")
-        .build();
-    ai_run_btn.add_css_class("suggested-action");
-
-    ai_entry_box.append(&ai_entry);
-    ai_entry_box.append(&ai_spinner);
-    ai_entry_box.append(&ai_run_btn);
-    ai_revealer.set_child(Some(&ai_entry_box));
+    let (ai_revealer, ai_entry, ai_spinner, ai_run_btn) = ai::create_ai_panel();
     main_vbox.append(&ai_revealer);
 
     // Sidebar & Content Split
-    let paned = Paned::new(Orientation::Horizontal);
-    paned.set_hexpand(true);
-    paned.set_vexpand(true);
-    paned.set_position(475); // Balanced split for Editor and Preview
-    paned.set_wide_handle(true);
-    
-    let outer_paned = Paned::new(Orientation::Horizontal);
-    outer_paned.set_hexpand(true);
-    outer_paned.set_vexpand(true);
-    outer_paned.set_position(250); // Initial sidebar width
-    outer_paned.set_wide_handle(true);
-    main_vbox.append(&outer_paned);
-
-    // Sidebar Outline
-    let sidebar_list = ListBox::new();
-    let sidebar_scroll = ScrolledWindow::builder()
-        .child(&sidebar_list)
-        .vexpand(true)
-        .width_request(200)
-        .build();
-    sidebar_scroll.add_css_class("sidebar");
-    outer_paned.set_start_child(Some(&sidebar_scroll));
-    outer_paned.set_end_child(Some(&paned));
-
-    // Status Bar
-    let status_bar = Box::new(Orientation::Horizontal, 12);
-    status_bar.set_margin_start(12);
-    status_bar.set_margin_end(12);
-    status_bar.set_margin_top(4);
-    status_bar.set_margin_bottom(4);
-    status_bar.add_css_class("dim-label");
-
-    let pos_label = gtk4::Label::new(Some("Line: 1, Col: 1"));
-    let word_count_label = gtk4::Label::new(Some("Words: 0"));
-    let ai_status_label = gtk4::Label::new(Some("AI: Checking..."));
-    ai_status_label.set_hexpand(true);
-    ai_status_label.set_halign(gtk4::Align::End);
-
-    status_bar.append(&pos_label);
-    status_bar.append(&word_count_label);
-    status_bar.append(&ai_status_label);
-    main_vbox.append(&status_bar);
+    let (
+        _outer_paned,
+        paned,
+        sidebar_list,
+        sidebar_scroll,
+        _status_bar,
+        pos_label,
+        word_count_label,
+        ai_status_label,
+    ) = layout::create_main_layout(&main_vbox);
 
     let state = Rc::new(RefCell::new(AppState {
         current_file: None,
@@ -356,73 +241,11 @@ fn build_ui(app: &Application) {
     ));
 
     // Editor
-    let lang_manager = LanguageManager::default();
-    let lang = lang_manager.language("latex");
-    let buffer = Buffer::new(None);
-    buffer.set_language(lang.as_ref());
-    buffer.set_highlight_syntax(true);
-    buffer.set_enable_undo(true);
-
-    let editor_view = View::with_buffer(&buffer);
-    editor_view.set_monospace(true);
-    editor_view.set_show_line_numbers(true);
-    editor_view.set_highlight_current_line(true);
-    editor_view.set_auto_indent(true);
-    editor_view.set_insert_spaces_instead_of_tabs(true);
-    editor_view.set_indent_width(4);
-    buffer.set_highlight_matching_brackets(true);
-    editor_view.set_smart_backspace(true);
-
-    // Style Scheme Management (Dark/Light Mode)
     let style_manager = adw::StyleManager::default();
-    let scheme_manager = StyleSchemeManager::default();
-    
-    let update_theme = glib::clone!(
-        #[weak]
-        buffer,
-        move |is_dark: bool| {
-            let scheme_id = if is_dark { "Adwaita-dark" } else { "Adwaita" };
-            if let Some(scheme) = scheme_manager.scheme(scheme_id) {
-                buffer.set_style_scheme(Some(&scheme));
-            } else {
-                // Fallback to classic schemes if Adwaita ones are missing
-                let fallback = if is_dark { "classic-dark" } else { "classic" };
-                if let Some(scheme) = scheme_manager.scheme(fallback) {
-                    buffer.set_style_scheme(Some(&scheme));
-                }
-            }
-        }
-    );
+    let (buffer, editor_view, editor_scroll) = editor::create_editor(&style_manager);
 
-    // Initial theme
-    update_theme(style_manager.is_dark());
-
-    // Listen for system theme changes
-    style_manager.connect_dark_notify(move |sm| {
-        update_theme(sm.is_dark());
-    });
-
-    let editor_scroll = ScrolledWindow::builder()
-        .child(&editor_view)
-        .hexpand(true)
-        .vexpand(true)
-        .build();
-    
     // Search Bar
-    let search_revealer = Revealer::builder()
-        .transition_type(RevealerTransitionType::SlideDown)
-        .build();
-    let search_entry = gtk4::SearchEntry::builder()
-        .hexpand(true)
-        .placeholder_text("Search document...")
-        .build();
-    let search_box = Box::new(Orientation::Horizontal, 6);
-    search_box.set_margin_start(12);
-    search_box.set_margin_end(12);
-    search_box.set_margin_top(6);
-    search_box.set_margin_bottom(6);
-    search_box.append(&search_entry);
-    search_revealer.set_child(Some(&search_box));
+    let (search_revealer, search_entry) = editor::create_search_bar();
 
     let editor_container = Box::new(Orientation::Vertical, 0);
     editor_container.append(&search_revealer);
@@ -430,16 +253,7 @@ fn build_ui(app: &Application) {
     paned.set_start_child(Some(&editor_container));
 
     // Preview
-    let web_view = WebView::new();
-    if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
-        settings.set_zoom_text_only(false);
-        settings.set_enable_developer_extras(true);
-    }
-    let preview_scroll = ScrolledWindow::builder()
-        .child(&web_view)
-        .hexpand(true)
-        .vexpand(true)
-        .build();
+    let (web_view, preview_scroll) = webview::create_preview();
     paned.set_end_child(Some(&preview_scroll));
 
     // Search Logic
@@ -469,8 +283,11 @@ fn build_ui(app: &Application) {
         buffer,
         move |_| {
             let buf = buffer.upcast_ref::<gtk4::TextBuffer>();
-            let cursor_mark = buf.mark("insert").expect("No insert mark");
-            let iter = buf.iter_at_mark(&cursor_mark);
+            let iter = if let Some(cursor_mark) = buf.mark("insert") {
+                buf.iter_at_mark(&cursor_mark)
+            } else {
+                buf.start_iter()
+            };
             if let Some((start, end, _)) = search_context.forward(&iter) {
                 buf.select_range(&start, &end);
                 editor_view.scroll_to_iter(&mut start.clone(), 0.0, false, 0.5, 0.5);
@@ -487,8 +304,11 @@ fn build_ui(app: &Application) {
         buffer,
         move |_| {
             let buf = buffer.upcast_ref::<gtk4::TextBuffer>();
-            let cursor_mark = buf.mark("insert").expect("No insert mark");
-            let iter = buf.iter_at_mark(&cursor_mark);
+            let iter = if let Some(cursor_mark) = buf.mark("insert") {
+                buf.iter_at_mark(&cursor_mark)
+            } else {
+                buf.start_iter()
+            };
             if let Some((start, end, _)) = search_context.backward(&iter) {
                 buf.select_range(&start, &end);
                 editor_view.scroll_to_iter(&mut start.clone(), 0.0, false, 0.5, 0.5);
@@ -496,439 +316,42 @@ fn build_ui(app: &Application) {
         }
     ));
 
-    // Logic: Zoom (Keyboard & Touchpad)
-    let zoom_key_ctrl = EventControllerKey::new();
-    zoom_key_ctrl.set_propagation_phase(PropagationPhase::Capture);
-    window.add_controller(zoom_key_ctrl.clone());
+    // Zoom handlers
+    editor::connect_zoom_handlers(
+        &window,
+        state.clone(),
+        &editor_view,
+        &editor_scroll,
+        &search_revealer,
+        &search_entry,
+        &web_view,
+    );
+    editor::connect_sidebar_activation(&sidebar_list, &buffer, &editor_view);
 
-    let zoom_provider = gtk4::CssProvider::new();
-    #[allow(deprecated)]
-    editor_view.style_context().add_provider(
-        &zoom_provider,
-        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    // Live preview handler
+    webview::connect_live_preview(
+        &buffer,
+        &web_view,
+        &sidebar_list,
+        state.clone(),
+        &toast_overlay,
     );
 
-    let apply_editor_zoom = {
-        let zoom_provider = zoom_provider.clone();
-        move |zoom: f64| {
-            let size = (DEFAULT_EDITOR_FONT_SIZE as f64 * zoom) as i32;
-            let css = format!(
-                "textview {{ font-family: '{}'; font-size: {}pt; }}",
-                DEFAULT_EDITOR_FONT, size
-            );
-            zoom_provider.load_from_string(&css);
-        }
-    };
+    // Export PDF handler
+    file_ops::connect_export_pdf(&export_btn, &window, &buffer, state.clone(), &toast_overlay);
 
-    let apply_preview_zoom = {
-        let web_view = web_view.clone();
-        move |zoom: f64| {
-            web_view.set_zoom_level(zoom);
-        }
-    };
-
-    // Initial application
-    apply_editor_zoom(DEFAULT_ZOOM_LEVEL);
-    apply_preview_zoom(DEFAULT_ZOOM_LEVEL);
-
-    zoom_key_ctrl.connect_key_pressed({
-        let state = state.clone();
-        let apply_editor_zoom = apply_editor_zoom.clone();
-        let apply_preview_zoom = apply_preview_zoom.clone();
-        let window_weak = window.downgrade();
-        let search_revealer_weak = search_revealer.downgrade();
-        let search_entry_weak = search_entry.downgrade();
-        let editor_view_weak = editor_view.downgrade();
-        let editor_scroll_weak = editor_scroll.downgrade();
-
-        move |_, key, _, modifier| {
-            let window = match window_weak.upgrade() { Some(w) => w, None => return glib::Propagation::Proceed };
-            let search_revealer = match search_revealer_weak.upgrade() { Some(r) => r, None => return glib::Propagation::Proceed };
-            let search_entry = match search_entry_weak.upgrade() { Some(e) => e, None => return glib::Propagation::Proceed };
-            let editor_view = match editor_view_weak.upgrade() { Some(v) => v, None => return glib::Propagation::Proceed };
-            let editor_scroll = match editor_scroll_weak.upgrade() { Some(s) => s, None => return glib::Propagation::Proceed };
-
-            if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
-                let mut s = state.borrow_mut();
-                let focus = gtk4::prelude::RootExt::focus(&window);
-                
-                // Determine which zoom to update based on focus
-                let is_editor = focus.as_ref().map(|f| f.is_ancestor(&editor_scroll)).unwrap_or(true);
-
-                match key {
-                    gdk::Key::f => {
-                        let is_revealed = search_revealer.reveals_child();
-                        search_revealer.set_reveal_child(!is_revealed);
-                        if !is_revealed {
-                            search_entry.grab_focus();
-                        } else {
-                            editor_view.grab_focus();
-                        }
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::Escape => {
-                        if search_revealer.reveals_child() {
-                            search_revealer.set_reveal_child(false);
-                            editor_view.grab_focus();
-                            return glib::Propagation::Stop;
-                        }
-                    }
-                    gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => {
-                        if is_editor {
-                            s.editor_zoom = (s.editor_zoom + ZOOM_STEP).min(MAX_ZOOM_LEVEL);
-                            apply_editor_zoom(s.editor_zoom);
-                        } else {
-                            s.preview_zoom = (s.preview_zoom + ZOOM_STEP).min(MAX_ZOOM_LEVEL);
-                            apply_preview_zoom(s.preview_zoom);
-                        }
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::minus | gdk::Key::underscore | gdk::Key::KP_Subtract => {
-                        if is_editor {
-                            s.editor_zoom = (s.editor_zoom - ZOOM_STEP).max(MIN_ZOOM_LEVEL);
-                            apply_editor_zoom(s.editor_zoom);
-                        } else {
-                            s.preview_zoom = (s.preview_zoom - ZOOM_STEP).max(MIN_ZOOM_LEVEL);
-                            apply_preview_zoom(s.preview_zoom);
-                        }
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::_0 | gdk::Key::KP_0 => {
-                        if is_editor {
-                            s.editor_zoom = DEFAULT_ZOOM_LEVEL;
-                            apply_editor_zoom(s.editor_zoom);
-                        } else {
-                            s.preview_zoom = DEFAULT_ZOOM_LEVEL;
-                            apply_preview_zoom(s.preview_zoom);
-                        }
-                        return glib::Propagation::Stop;
-                    }
-                    _ => {}
-                }
-            }
-            glib::Propagation::Proceed
-        }
-    });
-
-    // Scroll zoom: tied to mouse position
-    let editor_scroll_ctrl = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
-    editor_scroll_ctrl.set_propagation_phase(PropagationPhase::Capture);
-    editor_view.add_controller(editor_scroll_ctrl.clone());
-    editor_scroll_ctrl.connect_scroll({
-        let state = state.clone();
-        let apply_editor_zoom = apply_editor_zoom.clone();
-        let ctrl_weak = editor_scroll_ctrl.downgrade();
-        move |_, _, dy| {
-            if let Some(ctrl) = ctrl_weak.upgrade() {
-                if ctrl.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
-                    let mut s = state.borrow_mut();
-                    if dy < 0.0 {
-                        s.editor_zoom = (s.editor_zoom + ZOOM_STEP).min(MAX_ZOOM_LEVEL);
-                    } else {
-                        s.editor_zoom = (s.editor_zoom - ZOOM_STEP).max(MIN_ZOOM_LEVEL);
-                    }
-                    apply_editor_zoom(s.editor_zoom);
-                    return glib::Propagation::Stop;
-                }
-            }
-            glib::Propagation::Proceed
-        }
-    });
-
-    let preview_scroll_ctrl = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
-    preview_scroll_ctrl.set_propagation_phase(PropagationPhase::Capture);
-    web_view.add_controller(preview_scroll_ctrl.clone());
-    preview_scroll_ctrl.connect_scroll({
-        let state = state.clone();
-        let apply_preview_zoom = apply_preview_zoom.clone();
-        let ctrl_weak = preview_scroll_ctrl.downgrade();
-        move |_, _, dy| {
-            if let Some(ctrl) = ctrl_weak.upgrade() {
-                if ctrl.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
-                    let mut s = state.borrow_mut();
-                    if dy < 0.0 {
-                        s.preview_zoom = (s.preview_zoom + ZOOM_STEP).min(MAX_ZOOM_LEVEL);
-                    } else {
-                        s.preview_zoom = (s.preview_zoom - ZOOM_STEP).max(MIN_ZOOM_LEVEL);
-                    }
-                    apply_preview_zoom(s.preview_zoom);
-                    return glib::Propagation::Stop;
-                }
-            }
-            glib::Propagation::Proceed
-        }
-    });
-
-    sidebar_list.connect_row_activated(glib::clone!(
-        #[weak] buffer,
-        #[weak] editor_view,
-        move |_, row| {
-
-            let index = row.index();
-            let text = crate::utils::buffer_to_string(buffer.upcast_ref());
-            let sections = crate::utils::extract_sections(&text);
-            
-            if let Some((_, line)) = sections.get(index as usize) {
-                let buf = buffer.upcast_ref::<gtk4::TextBuffer>();
-                if let Some(mut iter) = buf.iter_at_line(*line) {
-                    buf.place_cursor(&iter);
-                    editor_view.scroll_to_iter(&mut iter, 0.0, false, 0.5, 0.5);
-                    editor_view.grab_focus();
-                }
-            }
-        }
-    ));
-
-    // Logic: Live Preview
-    let preview_gen = state.borrow().preview_generator.clone();
-    let queue = CompilationQueue::new(preview_gen.clone());
-    let debounce_id = Rc::new(RefCell::new(None::<glib::SourceId>));
-
-    buffer.connect_changed(glib::clone!(
-        #[weak]
-        web_view,
-        #[weak]
-        sidebar_list,
-        #[strong]
-        debounce_id,
-        #[strong]
-        state,
-        move |buf| {
-            // Update Sidebar
-            let text = crate::utils::buffer_to_string(buf.upcast_ref());
-            let sections = crate::utils::extract_sections(&text);
-            
-            // Clear list
-            while let Some(child) = sidebar_list.first_child() {
-                sidebar_list.remove(&child);
-            }
-
-            for (title, _line) in sections {
-                let row = gtk4::ListBoxRow::new();
-                let label = gtk4::Label::builder()
-                    .label(&title)
-                    .xalign(0.0)
-                    .margin_start(6)
-                    .margin_end(6)
-                    .margin_top(4)
-                    .margin_bottom(4)
-                    .build();
-                row.set_child(Some(&label));
-                sidebar_list.append(&row);
-            }
-
-            if let Some(source_id) = debounce_id.borrow_mut().take() {
-                // Safely remove the source - it may have already fired, which is OK
-                source_id.remove();
-            }
-
-            let text = crate::utils::buffer_to_string(buf.upcast_ref());
-            let queue = queue.clone();
-
-            let debounce_id_clone = debounce_id.clone();
-            let queue_clone = queue.clone();
-            let state_render = state.clone();
-            let source_id =
-                glib::timeout_add_local_once(std::time::Duration::from_millis(PREVIEW_DEBOUNCE_MS), move || {
-                    // If this timer runs, it implies it wasn't cancelled.
-                    // We MUST clear the RefCell so subsequent keystrokes don't try to remove this already-dead source.
-                    *debounce_id_clone.borrow_mut() = None;
-
-                    let ctx = glib::MainContext::default();
-                    // Move blocking compilation out of the main thread
-                    ctx.spawn_local(async move {
-                        let html = queue_clone.enqueue(text).await
-                            .unwrap_or_else(|| "Compilation cancelled".to_string());
-                        web_view.load_html(&html, None);
-                        
-                        // Re-apply zoom as load_html resets it
-                        let zoom = state_render.borrow().preview_zoom;
-                        web_view.set_zoom_level(zoom);
-                    });
-                });
-
-            *debounce_id.borrow_mut() = Some(source_id);
-        }
-    ));
-
-    // Logic: Export PDF
-    export_btn.connect_clicked(glib::clone!(
-        #[weak]
-        window,
-        #[weak]
-        buffer,
-        #[strong]
-        state,
-        #[weak]
-        toast_overlay,
-        move |_| {
-            let dialog = gtk4::FileDialog::builder()
-                .title("Export PDF")
-                .initial_name("document.pdf")
-                .build();
-
-            let latex = crate::utils::buffer_to_string(buffer.upcast_ref());
-            let preview_gen = state.borrow().preview_generator.clone();
-
-            dialog.save(
-                Some(&window),
-                None::<&gio::Cancellable>,
-                glib::clone!(
-                    #[weak]
-                    toast_overlay,
-                    move |res| {
-                        if let Ok(file) = res {
-                            if let Some(path) = file.path() {
-                                let ctx = glib::MainContext::default();
-                                ctx.spawn_local(glib::clone!(
-                                    #[weak]
-                                    toast_overlay,
-                                    async move {
-                                        let result = tokio::task::spawn_blocking(move || {
-                                            preview_gen.export_pdf(&latex, &path)
-                                        })
-                                        .await
-                                        .unwrap_or_else(|e| Err(format!("Task panic: {}", e)));
-
-                                        match result {
-                                            Ok(_) => {
-                                                toast_overlay.add_toast(adw::Toast::new("PDF exported successfully"));
-                                            }
-                                            Err(e) => {
-                                                toast_overlay.add_toast(adw::Toast::new(&format!("Export failed: {}", e)));
-                                            }
-                                        }
-                                    }
-                                ));
-                            }
-                        }
-                    }
-                ),
-            );
-        }
-    ));
-
-    // Logic: New
-    new_btn.connect_clicked(glib::clone!(
-        #[weak]
-        buffer,
-        #[strong]
-        state,
-        #[weak]
-        view_title,
-        move |_| {
-            buffer.set_text("");
-            state.borrow_mut().current_file = None;
-            view_title.set_subtitle("");
-        }
-    ));
-
-    // Logic: Status Bar Updates
-    buffer.connect_cursor_position_notify(glib::clone!(
-        #[weak]
-        pos_label,
-        move |buf| {
-            let buf = buf.upcast_ref::<gtk4::TextBuffer>();
-            let iter = buf.iter_at_mark(&buf.mark("insert").expect("No insert mark"));
-            let line = iter.line() + 1;
-            let col = iter.line_offset() + 1;
-            pos_label.set_text(&format!("Line: {}, Col: {}", line, col));
-        }
-    ));
-
-    buffer.connect_changed(glib::clone!(
-        #[weak]
-        word_count_label,
-        move |buf| {
-            let text = crate::utils::buffer_to_string(buf.upcast_ref());
-            let words = text.split_whitespace().count();
-            word_count_label.set_text(&format!("Words: {}", words));
-        }
-    ));
-
-    // Logic: Open
-    open_btn.connect_clicked(glib::clone!(
-        #[weak]
-        window,
-        #[weak]
-        buffer,
-        #[strong]
-        state,
-        #[weak]
-        view_title,
-        move |_| {
-            let dialog = gtk4::FileDialog::builder().title("Open File").build();
-
-            dialog.open(
-                Some(&window),
-                None::<&gio::Cancellable>,
-                glib::clone!(
-                    #[strong]
-                    state,
-                    #[weak]
-                    buffer,
-                    #[weak]
-                    view_title,
-                    move |res| {
-                        if let Ok(file) = res {
-                            if let Some(path) = file.path() {
-                                if let Ok(content) = open_file(&path) {
-                                    buffer.set_text(&content);
-                                    state.borrow_mut().current_file = Some(path.to_path_buf());
-                                    view_title.set_subtitle(&path.to_string_lossy());
-                                }
-                            }
-                        }
-                    }
-                ),
-            );
-        }
-    ));
-
-    // Logic: Save
-    save_btn.connect_clicked(glib::clone!(
-        #[weak]
-        window,
-        #[weak]
-        buffer,
-        #[strong]
-        state,
-        #[weak]
-        view_title,
-        move |_| {
-            let path_opt = state.borrow().current_file.clone();
-            if let Some(path) = path_opt {
-                if let Err(e) = save_file(&path, buffer.upcast_ref()) {
-                    tracing::error!("Failed to save: {}", e);
-                }
-            } else {
-                let dialog = gtk4::FileDialog::builder().title("Save File").build();
-
-                dialog.save(
-                    Some(&window),
-                    None::<&gio::Cancellable>,
-                    glib::clone!(
-                        #[strong]
-                        state,
-                        #[weak]
-                        buffer,
-                        #[weak]
-                        view_title,
-                        move |res| {
-                            if let Ok(file) = res {
-                                if let Some(path) = file.path() {
-                                    if save_file(&path, buffer.upcast_ref()).is_ok() {
-                                        state.borrow_mut().current_file = Some(path.to_path_buf());
-                                        view_title.set_subtitle(&path.to_string_lossy());
-                                    }
-                                }
-                            }
-                        }
-                    ),
-                );
-            }
-        }
-    ));
+    // File operations and status bar
+    file_ops::connect_file_operations(
+        &new_btn,
+        &open_btn,
+        &save_btn,
+        &window,
+        &buffer,
+        state.clone(),
+        &view_title,
+        &pos_label,
+        &word_count_label,
+    );
 
     // Logic: AI Assistant Toggle
     ai_btn.connect_clicked(glib::clone!(
@@ -947,14 +370,22 @@ fn build_ui(app: &Application) {
 
     // Common AI logic
     let trigger_ai = glib::clone!(
-        #[strong] state,
-        #[weak] buffer,
-        #[weak] ai_run_btn,
-        #[weak] ai_spinner,
-        #[weak] toast_overlay,
-        #[weak] ai_entry,
-        #[weak] ai_revealer,
-        #[weak] ai_status_label,
+        #[strong]
+        state,
+        #[weak]
+        buffer,
+        #[weak]
+        ai_run_btn,
+        #[weak]
+        ai_spinner,
+        #[weak]
+        toast_overlay,
+        #[weak]
+        ai_entry,
+        #[weak]
+        ai_revealer,
+        #[weak]
+        ai_status_label,
         move || {
             let user_instruction = ai_entry.text().to_string();
             let text = crate::utils::buffer_to_string(buffer.upcast_ref());
