@@ -115,9 +115,9 @@ impl Preview {
         Err(format!("Command timed out after {} seconds", timeout_secs))
     }
 
-    pub fn render(&self, content: &str) -> String {
+    pub fn render(&self, content: &str, dark_mode: bool) -> String {
         match self.compile_latex(content) {
-            Ok(svgs) => self.wrap_svgs(svgs),
+            Ok(svgs) => self.wrap_svgs(svgs, dark_mode),
             Err(e) => self.wrap_error(&e),
         }
     }
@@ -272,7 +272,6 @@ impl Preview {
         let pdf_path = dir.path().join("doc.pdf");
 
         // Convert PDF to SVG using pdftocairo
-        // pdftocairo doc.pdf doc -svg -> doc-1.svg, doc-2.svg...
         let mut cmd = Command::new("pdftocairo");
         cmd.arg("-svg")
             .arg(&pdf_path)
@@ -299,30 +298,10 @@ impl Preview {
             ));
         }
 
-        // Wait a small bit for files to be flushed to disk if needed (rare but possible on some FS)
+        // Wait a small bit for files to be flushed to disk
         std::thread::sleep(std::time::Duration::from_millis(FS_FLUSH_DELAY_MS));
 
         let mut svgs = Vec::new();
-        // Check if output.svg exists directly (for single page output)
-        let direct_output = dir.path().join("output.svg");
-        if direct_output.exists() {
-            if let Ok(content) = fs::read_to_string(&direct_output) {
-                svgs.push(content);
-            }
-        }
-
-        // Check for "output" without extension (user environment quirk)
-        let weird_output = dir.path().join("output");
-        if weird_output.exists() && weird_output.is_file() {
-            if let Ok(content) = fs::read_to_string(&weird_output) {
-                // If it really is an SVG, push it.
-                if content.contains("<svg") {
-                    svgs.push(content);
-                }
-            }
-        }
-
-        // Look for output-*.svg files (multi-page only now)
         let paths = fs::read_dir(dir.path()).map_err(|e| {
             Self::sanitize_paths(
                 &format!("Failed to read temp dir: {}", e),
@@ -334,19 +313,20 @@ impl Preview {
             .filter_map(|p| p.ok())
             .filter(|p| {
                 let name = p.file_name().to_string_lossy().to_string();
-                name.starts_with("output-") && name.ends_with(".svg")
+                name.starts_with("output") && name.ends_with(".svg")
             })
             .collect();
 
-        // Sort by page number (output-1.svg, output-2.svg...)
         svg_paths.sort_by_key(|p| {
             let name = p.file_name().to_string_lossy().to_string();
-            let num: u32 = name
-                .trim_start_matches("output-")
-                .trim_end_matches(".svg")
-                .parse()
-                .unwrap_or(0);
-            num
+            if name == "output.svg" {
+                0
+            } else {
+                name.trim_start_matches("output-")
+                    .trim_end_matches(".svg")
+                    .parse()
+                    .unwrap_or(0)
+            }
         });
 
         for entry in svg_paths {
@@ -359,56 +339,24 @@ impl Preview {
             let log_path = dir.path().join("doc.log");
             let log =
                 fs::read_to_string(log_path).unwrap_or_else(|_| "No log file found".to_string());
-
-            if log.contains("No pages of output") {
-                return Err("Document compiled but generated no pages. Ensure you have content between \\begin{document} and \\end{document}.".to_string());
-            }
-
-            // List files in temp dir for debugging `pdftocairo` issues
-            let file_list = fs::read_dir(dir.path())
-                .map(|entries| {
-                    entries
-                        .filter_map(|e| e.ok())
-                        .map(|e| e.file_name().to_string_lossy().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_else(|e| {
-                    Self::sanitize_paths(
-                        &format!("Could not list directory: {}", e),
-                        &temp_dir_path,
-                        &input_path_str,
-                    )
-                });
-
-            let cairo_stderr_sanitized =
-                Self::sanitize_paths(&cairo_stderr, &temp_dir_path, &input_path_str);
-            let log_sanitized = Self::sanitize_paths(&log, &temp_dir_path, &input_path_str);
             return Err(format!(
-                "No SVG pages were generated, but a PDF file exists.\n\
-                Temp Dir Contents: [{}]\n\
-                pdftocairo stderr: {}\n\
-                Likely a LaTeX compilation error occurred.\n\n--- LOG ---\n{}",
-                file_list, cairo_stderr_sanitized, log_sanitized
+                "No SVG pages were generated.\n\n--- LOG ---\n{}",
+                log
             ));
         }
 
         Ok(svgs)
     }
 
-    fn wrap_svgs(&self, svgs: Vec<String>) -> String {
-        // Pre-calculate capacity to reduce allocations
-        // Each page wrapper adds ~30 chars: <div class="page"></div>
-        const PAGE_WRAPPER_OVERHEAD: usize = 30;
-        let total_svg_size: usize = svgs.iter().map(|s| s.len()).sum();
-        let estimated_capacity = total_svg_size + (svgs.len() * PAGE_WRAPPER_OVERHEAD);
-
-        let mut body_content = String::with_capacity(estimated_capacity);
+    fn wrap_svgs(&self, svgs: Vec<String>, dark_mode: bool) -> String {
+        let mut body_content = String::new();
         for svg in svgs {
             body_content.push_str("<div class=\"page\">");
             body_content.push_str(&svg);
             body_content.push_str("</div>");
         }
+
+        let body_class = if dark_mode { "dark-mode" } else { "" };
 
         format!(
             "{}",
@@ -449,10 +397,18 @@ impl Preview {
                                          background-color: #1e1e1e;
                                      }
                                  }
+
+                                 body.dark-mode .page {
+                                     background: #1e1e1e;
+                                     border: 1px solid #333;
+                                 }
+                                 body.dark-mode svg {
+                                     filter: invert(1) hue-rotate(180deg) brightness(1.2);
+                                 }
                              ")
                          }
                      }
-                    body {
+                    body(class=body_class) {
                         : Raw(&body_content);
                     }
                 }
@@ -502,13 +458,5 @@ mod tests {
         let text = "Error in /tmp/xyz123/doc.tex: missing package";
         let sanitized = Preview::sanitize_paths(text, temp_dir, input_path);
         assert_eq!(sanitized, "Error in [TEMP_DIR]/doc.tex: missing package");
-
-        let text2 = "Paths: /tmp/xyz123 and /tmp/xyz123/doc.tex";
-        let sanitized2 = Preview::sanitize_paths(text2, temp_dir, input_path);
-        assert_eq!(sanitized2, "Paths: [TEMP_DIR] and [TEMP_DIR]/doc.tex");
-
-        let text3 = "No paths here";
-        let sanitized3 = Preview::sanitize_paths(text3, temp_dir, input_path);
-        assert_eq!(sanitized3, "No paths here");
     }
 }

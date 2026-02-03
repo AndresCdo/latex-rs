@@ -27,6 +27,4 @@ pub struct AppState {
     pub editor_zoom: f64,
     /// Current zoom level for the preview pane.
     pub preview_zoom: f64,
-    /// History of AI instructions.
-    pub ai_history: Vec<String>,
 }

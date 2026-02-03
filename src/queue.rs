@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 /// This prevents resource conflicts and temp file corruption from concurrent compilations.
 #[derive(Clone)]
 pub struct CompilationQueue {
-    sender: mpsc::Sender<(String, oneshot::Sender<String>)>,
+    sender: mpsc::Sender<(String, bool, oneshot::Sender<String>)>,
     /// Shared reference to the worker handle for graceful shutdown.
     /// Wrapped in Arc<Mutex> to allow cloning while maintaining single ownership semantics.
     worker_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -21,13 +21,13 @@ impl CompilationQueue {
     /// for temporary file operations.
     pub fn new(preview: Preview) -> Self {
         let (sender, mut receiver) =
-            mpsc::channel::<(String, oneshot::Sender<String>)>(COMPILATION_QUEUE_BUFFER);
+            mpsc::channel::<(String, bool, oneshot::Sender<String>)>(COMPILATION_QUEUE_BUFFER);
 
         let handle = tokio::spawn(async move {
-            while let Some((latex, result_sender)) = receiver.recv().await {
+            while let Some((latex, dark_mode, result_sender)) = receiver.recv().await {
                 let preview = preview.clone();
                 let start = std::time::Instant::now();
-                let html = tokio::task::spawn_blocking(move || preview.render(&latex))
+                let html = tokio::task::spawn_blocking(move || preview.render(&latex, dark_mode))
                     .await
                     .unwrap_or_else(|e| format!("Render Task Error: {}", e));
                 let elapsed = start.elapsed();
@@ -54,10 +54,10 @@ impl CompilationQueue {
     ///
     /// Returns `Some(html)` with the rendered result, or `None` if the request was dropped
     /// or the worker is unavailable.
-    pub async fn enqueue(&self, latex: String) -> Option<String> {
+    pub async fn enqueue(&self, latex: String, dark_mode: bool) -> Option<String> {
         let (result_sender, result_receiver) = oneshot::channel();
         // Try to send, if channel is full, drop the new job (keep the pending one)
-        if self.sender.try_send((latex, result_sender)).is_err() {
+        if self.sender.try_send((latex, dark_mode, result_sender)).is_err() {
             // Channel full, ignore new job
             tracing::debug!("Compilation queue full, dropping new job");
             return None;
@@ -98,7 +98,7 @@ mod tests {
         fn new() -> Self {
             MockPreview
         }
-        fn render(&self, latex: &str) -> String {
+        fn render(&self, latex: &str, _dark_mode: bool) -> String {
             format!("Rendered: {}", latex)
         }
     }

@@ -1,19 +1,23 @@
+use crate::ui::sidebar;
 use gtk4::prelude::{BoxExt, WidgetExt};
-use gtk4::{Box, Label, ListBox, Orientation, Paned, ScrolledWindow};
+use gtk4::{Box, Label, ListBox, Orientation, Paned, SearchEntry};
 
-/// Creates the main layout structure including the sidebar (outline),
+/// Creates the main layout structure including the sidebar hub,
 /// the editor/preview split view, and the status bar.
 pub fn create_main_layout(
-    main_vbox: &gtk4::Box,
+    _main_vbox: &gtk4::Box,
 ) -> (
     Paned,
     Paned,
-    ListBox,
-    ScrolledWindow,
-    gtk4::Box,
+    ListBox,        // Outline list
+    adw::ViewStack, // Sidebar hub
+    gtk4::Box,      // Sidebar container
+    gtk4::Box,      // Status bar
     Label,
     Label,
     Label,
+    SearchEntry, // Arxiv search
+    ListBox,     // Arxiv results
 ) {
     let paned = Paned::new(Orientation::Horizontal);
     paned.set_hexpand(true);
@@ -24,19 +28,20 @@ pub fn create_main_layout(
     let outer_paned = Paned::new(Orientation::Horizontal);
     outer_paned.set_hexpand(true);
     outer_paned.set_vexpand(true);
-    outer_paned.set_position(250); // Initial sidebar width
+    outer_paned.set_position(280); // Slightly wider for hub
     outer_paned.set_wide_handle(true);
-    main_vbox.append(&outer_paned);
 
-    // Sidebar Outline
-    let sidebar_list = ListBox::new();
-    let sidebar_scroll = ScrolledWindow::builder()
-        .child(&sidebar_list)
-        .vexpand(true)
-        .width_request(200)
-        .build();
-    sidebar_scroll.add_css_class("sidebar");
-    outer_paned.set_start_child(Some(&sidebar_scroll));
+    // We'll let main.rs decide where to append outer_paned
+
+    // Sidebar Hub
+    let (sidebar_hub, outline_list, arxiv_search, arxiv_list) = sidebar::create_sidebar_hub();
+    let sidebar_container = Box::new(Orientation::Vertical, 0);
+    sidebar_container.add_css_class("sidebar");
+    sidebar_container.set_width_request(250);
+
+    sidebar_container.append(&sidebar_hub);
+
+    outer_paned.set_start_child(Some(&sidebar_container));
     outer_paned.set_end_child(Some(&paned));
 
     // Status Bar
@@ -56,16 +61,19 @@ pub fn create_main_layout(
     status_bar.append(&pos_label);
     status_bar.append(&word_count_label);
     status_bar.append(&ai_status_label);
-    main_vbox.append(&status_bar);
+    // main_vbox.append(&status_bar); // Let main.rs handle this
 
     (
         outer_paned,
         paned,
-        sidebar_list,
-        sidebar_scroll,
+        outline_list,
+        sidebar_hub,
+        sidebar_container,
         status_bar,
         pos_label,
         word_count_label,
         ai_status_label,
+        arxiv_search,
+        arxiv_list,
     )
 }

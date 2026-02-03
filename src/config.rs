@@ -15,6 +15,14 @@ pub struct ProviderConfig {
 pub struct AppConfig {
     pub active_provider: String,
     pub providers: Vec<ProviderConfig>,
+    #[serde(default)]
+    pub ai_history: Vec<String>,
+    #[serde(default = "default_true")]
+    pub preview_dark_mode: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -44,6 +52,8 @@ impl Default for AppConfig {
                     system_prompt: None,
                 },
             ],
+            ai_history: Vec::new(),
+            preview_dark_mode: true,
         }
     }
 }

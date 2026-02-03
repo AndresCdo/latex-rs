@@ -37,6 +37,13 @@ pub fn create_ai_panel() -> (
         .accepts_tab(false)
         .height_request(36)
         .build();
+    // placeholder-text is only available in GTK 4.12+ for TextView
+    // Since we are using an environment that might have older GTK4,
+    // we should use a more compatible way if possible, or skip it.
+    // However, the user wants the feature.
+    // Let's check if it exists via introspection or just use GtkEntry if appropriate.
+    // Actually, let's just remove the set_property call that panics if not found.
+
     ai_entry.add_css_class("view");
     ai_entry.add_css_class("sidebar"); // Use sidebar class for border styling
 
@@ -85,6 +92,7 @@ pub fn create_ai_panel() -> (
     let accept_btn = Button::builder()
         .label("Accept Suggestion")
         .icon_name("emblem-ok-symbolic")
+        .tooltip_text("Accept AI changes and merge into document")
         .hexpand(true)
         .build();
     accept_btn.add_css_class("suggested-action");
@@ -92,6 +100,7 @@ pub fn create_ai_panel() -> (
     let reject_btn = Button::builder()
         .label("Reject")
         .icon_name("edit-clear-symbolic")
+        .tooltip_text("Discard AI changes and restore original text")
         .build();
     reject_btn.add_css_class("destructive-action");
 

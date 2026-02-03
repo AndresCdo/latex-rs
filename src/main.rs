@@ -138,11 +138,16 @@ fn build_ui(app: &Application) {
     let main_vbox = Box::new(Orientation::Vertical, 0);
     toast_overlay.set_child(Some(&main_vbox));
 
+    let banner = adw::Banner::builder()
+        .revealed(false)
+        .build();
+    main_vbox.append(&banner);
+
     // Custom CSS for better UI
     let css_provider = gtk4::CssProvider::new();
     css_provider.load_from_string(
         "
-        .dim-label { opacity: 0.7; font-size: 0.9em; }
+        .dim-label { opacity: 0.85; font-size: 0.9em; }
         .sidebar { border-right: 1px solid alpha(@borders, 0.5); background: @view_bg_color; }
         .linked button { border-radius: 0; }
         .linked button:first-child { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
@@ -154,11 +159,6 @@ fn build_ui(app: &Application) {
         &css_provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-
-    // Header Bar
-    let (header_bar, view_title, new_btn, open_btn, save_btn, export_btn, settings_btn, ai_btn, sidebar_toggle) =
-        header::create_header_bar();
-    main_vbox.append(&header_bar);
 
     // AI Prompt Entry (Revealer)
     let (
@@ -173,19 +173,121 @@ fn build_ui(app: &Application) {
         reject_btn,
         clear_btn,
     ) = ai::create_ai_panel();
-    main_vbox.append(&ai_revealer);
 
     // Sidebar & Content Split
     let (
-        _outer_paned,
+        outer_paned,
         paned,
-        sidebar_list,
-        sidebar_scroll,
-        _status_bar,
+        outline_list,
+        sidebar_hub,
+        sidebar_container,
+        status_bar,
         pos_label,
         word_count_label,
         ai_status_label,
+        arxiv_search,
+        arxiv_list,
     ) = layout::create_main_layout(&main_vbox);
+
+    // Header Bar
+    let (header_bar, view_title, new_btn, open_btn, save_btn, export_btn, settings_btn, ai_btn, sidebar_toggle) =
+        header::create_header_bar(&sidebar_hub);
+
+    // Welcome Page
+    let welcome_page = adw::StatusPage::builder()
+        .title("Welcome to latex-rs")
+        .description("Professional LaTeX editing with real-time preview and AI assistance.")
+        .icon_name("text-x-tex-symbolic")
+        .build();
+
+    let welcome_box = Box::new(Orientation::Vertical, 12);
+    let welcome_btns = Box::new(Orientation::Horizontal, 6);
+    welcome_btns.set_halign(gtk4::Align::Center);
+
+    let w_new_btn = gtk4::Button::builder()
+        .label("New Document")
+        .css_classes(["suggested-action", "pill"])
+        .build();
+    let w_open_btn = gtk4::Button::builder()
+        .label("Open File")
+        .css_classes(["pill"])
+        .build();
+
+    welcome_btns.append(&w_new_btn);
+    welcome_btns.append(&w_open_btn);
+    welcome_box.append(&welcome_btns);
+    welcome_page.set_child(Some(&welcome_box));
+
+    // View Stack for Welcome vs Main content
+    let content_stack = adw::ViewStack::new();
+    
+    let main_content = Box::new(Orientation::Vertical, 0);
+    main_content.append(&outer_paned);
+    main_content.append(&status_bar);
+    
+    content_stack.add_titled(&welcome_page, Some("welcome"), "Welcome");
+    content_stack.add_titled(&main_content, Some("main"), "Editor");
+
+    // Re-order components in main_vbox
+    main_vbox.append(&header_bar);
+    main_vbox.append(&ai_revealer);
+    main_vbox.append(&content_stack);
+
+    // Connect Welcome Page buttons
+    w_new_btn.connect_clicked(glib::clone!(
+        #[weak]
+        new_btn,
+        move |_| {
+            new_btn.emit_clicked();
+        }
+    ));
+
+    w_open_btn.connect_clicked(glib::clone!(
+        #[weak]
+        open_btn,
+        move |_| {
+            open_btn.emit_clicked();
+        }
+    ));
+
+    // Logic to show/hide editor based on file state
+    let update_view_state = glib::clone!(
+        #[weak]
+        content_stack,
+        #[weak]
+        header_bar,
+        move |has_file: bool| {
+            if has_file {
+                content_stack.set_visible_child_name("main");
+                header_bar.set_sensitive(true);
+            } else {
+                content_stack.set_visible_child_name("welcome");
+                // header_bar.set_sensitive(false); // We want to keep it sensitive for Open/New
+            }
+        }
+    );
+
+    // Initial state: welcome
+    update_view_state(false);
+
+    // Update state when New or Open is clicked
+    new_btn.connect_clicked(glib::clone!(
+        #[strong]
+        update_view_state,
+        move |_| {
+            update_view_state(true);
+        }
+    ));
+
+    open_btn.connect_clicked(glib::clone!(
+        #[strong]
+        update_view_state,
+        move |_| {
+            // We'll update it inside the open handler if it succeeds, 
+            // but for now just switching is fine as it shows the editor.
+            update_view_state(true);
+        }
+    ));
 
     let config = AppConfig::load();
 
@@ -200,17 +302,17 @@ fn build_ui(app: &Application) {
         preview_generator: Preview::new(),
         editor_zoom: DEFAULT_ZOOM_LEVEL,
         preview_zoom: DEFAULT_ZOOM_LEVEL,
-        ai_history: Vec::new(),
     }));
 
     // Dependency check
     let missing_deps = crate::utils::check_dependencies();
     if !missing_deps.is_empty() {
         let msg = format!(
-            "Missing dependencies: {}. Preview may not work.",
+            "Missing dependencies: {}. Preview will not work.",
             missing_deps.join(", ")
         );
-        toast_overlay.add_toast(adw::Toast::new(&msg));
+        banner.set_title(&msg);
+        banner.set_revealed(true);
         tracing::warn!(msg);
     }
 
@@ -279,9 +381,9 @@ fn build_ui(app: &Application) {
     // Sidebar logic
     sidebar_toggle.connect_active_notify(glib::clone!(
         #[weak]
-        sidebar_scroll,
+        sidebar_container,
         move |btn| {
-            sidebar_scroll.set_visible(btn.is_active());
+            sidebar_container.set_visible(btn.is_active());
         }
     ));
 
@@ -290,7 +392,7 @@ fn build_ui(app: &Application) {
     let (buffer, editor_view, editor_scroll) = editor::create_editor(&style_manager);
 
     // Search Bar
-    let (search_revealer, search_entry) = editor::create_search_bar();
+    let (search_revealer, search_entry, search_count_label) = editor::create_search_bar();
 
     let editor_container = Box::new(Orientation::Vertical, 0);
     editor_container.append(&search_revealer);
@@ -305,6 +407,21 @@ fn build_ui(app: &Application) {
     let search_settings = sourceview5::SearchSettings::new();
     let search_context = sourceview5::SearchContext::new(&buffer, Some(&search_settings));
     search_context.set_highlight(true);
+
+    search_context.connect_notify_local(Some("n-occurrences"), glib::clone!(
+        #[weak]
+        search_count_label,
+        move |ctx, _| {
+            let n = ctx.occurrences_count();
+            if n == 0 {
+                search_count_label.set_text("No matches");
+            } else if n == 1 {
+                search_count_label.set_text("1 match");
+            } else {
+                search_count_label.set_text(&format!("{} matches", n));
+            }
+        }
+    ));
 
     search_entry.connect_search_changed(glib::clone!(
         #[weak]
@@ -361,6 +478,164 @@ fn build_ui(app: &Application) {
         }
     ));
 
+    // Arxiv Search Logic
+    arxiv_search.connect_activate(glib::clone!(
+        #[weak]
+        arxiv_list,
+        #[weak]
+        toast_overlay,
+        #[weak]
+        window,
+        move |entry| {
+            let query = entry.text().to_string();
+            if query.is_empty() {
+                return;
+            }
+
+            // Clear previous results
+            while let Some(child) = arxiv_list.first_child() {
+                arxiv_list.remove(&child);
+            }
+
+            // Add loading indicator
+            let loading_label = gtk4::Label::new(Some("Searching arXiv..."));
+            loading_label.add_css_class("dim-label");
+            loading_label.set_margin_top(12);
+            let loading_row = gtk4::ListBoxRow::builder()
+                .child(&loading_label)
+                .selectable(false)
+                .activatable(false)
+                .build();
+            arxiv_list.append(&loading_row);
+
+            glib::MainContext::default().spawn_local(async move {
+                match crate::api::arxiv::search_arxiv(&query).await {
+                    Ok(entries) => {
+                        if loading_row.parent().is_some() {
+                            arxiv_list.remove(&loading_row);
+                        }
+                        if entries.is_empty() {
+                            let no_results = gtk4::Label::new(Some("No results found."));
+                            no_results.add_css_class("dim-label");
+                            no_results.set_margin_top(12);
+                            arxiv_list.append(&no_results);
+                        } else {
+                            for entry in entries {
+                                let authors = entry
+                                    .authors
+                                    .iter()
+                                    .map(|a| a.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                
+                                let title = entry.title.trim().replace("\n", " ");
+                                // Escape for pango markup just in case
+                                let escaped_title = glib::markup_escape_text(&title);
+                                let escaped_authors = glib::markup_escape_text(&authors);
+
+                                let row = adw::ActionRow::builder()
+                                    .title(escaped_title.as_str())
+                                    .subtitle(escaped_authors.as_str())
+                                    .title_lines(2)
+                                    .build();
+
+                                let info_btn = gtk4::Button::builder()
+                                    .icon_name("info-symbolic")
+                                    .valign(gtk4::Align::Center)
+                                    .has_frame(false)
+                                    .tooltip_text("View Summary")
+                                    .build();
+
+                                let summary = entry.summary.trim().replace("\n", " ");
+                                 info_btn.connect_clicked(glib::clone!(
+                                     #[weak]
+                                     window,
+                                     move |_| {
+                                         let dialog = adw::AlertDialog::builder()
+                                             .heading("Paper Summary")
+                                             .body(&summary)
+                                             .build();
+                                         dialog.add_response("close", "Close");
+                                         dialog.set_default_response(Some("close"));
+                                         dialog.present(Some(&window));
+                                     }
+                                 ));
+
+                                let bib_btn = gtk4::Button::builder()
+                                    .icon_name("edit-copy-symbolic")
+                                    .valign(gtk4::Align::Center)
+                                    .has_frame(false)
+                                    .tooltip_text("Copy BibTeX")
+                                    .build();
+
+                                let entry_id = crate::api::arxiv::extract_id(&entry.id);
+                                bib_btn.connect_clicked(glib::clone!(
+                                    #[weak]
+                                    toast_overlay,
+                                    move |_| {
+                                        let id = entry_id.clone();
+                                        glib::MainContext::default().spawn_local(glib::clone!(
+                                            #[weak]
+                                            toast_overlay,
+                                            async move {
+                                                match crate::api::arxiv::fetch_bibtex(&id).await {
+                                                    Ok(bib) => {
+                                                        let display = gdk::Display::default().expect("Could not connect to a display.");
+                                                        let clipboard = display.clipboard();
+                                                        clipboard.set_text(&bib);
+                                                        toast_overlay.add_toast(adw::Toast::new("BibTeX copied to clipboard"));
+                                                    }
+                                                    Err(e) => {
+                                                        toast_overlay.add_toast(adw::Toast::new(&format!("Failed to fetch BibTeX: {}", e)));
+                                                    }
+                                                }
+                                            }
+                                        ));
+                                    }
+                                ));
+
+                                let pdf_btn = gtk4::Button::builder()
+                                    .icon_name("document-open-symbolic")
+                                    .valign(gtk4::Align::Center)
+                                    .has_frame(false)
+                                    .tooltip_text("Open PDF")
+                                    .build();
+
+                                let pdf_link = entry.links.iter()
+                                    .find(|l| l.rel == "related" && l.href.contains("pdf"))
+                                    .map(|l| l.href.clone())
+                                    .or_else(|| {
+                                        entry.links.iter()
+                                            .find(|l| l.rel == "alternate")
+                                            .map(|l| l.href.replace("abs", "pdf") + ".pdf")
+                                    });
+
+                                if let Some(url) = pdf_link {
+                                    pdf_btn.connect_clicked(move |_| {
+                                        let _ = gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>);
+                                    });
+                                    row.add_suffix(&pdf_btn);
+                                }
+
+                                row.add_suffix(&info_btn);
+                                row.add_suffix(&bib_btn);
+                                arxiv_list.append(&row);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if loading_row.parent().is_some() {
+                            arxiv_list.remove(&loading_row);
+                        }
+                        let error_label = gtk4::Label::new(Some(&format!("Error: {}", e)));
+                        error_label.add_css_class("error");
+                        arxiv_list.append(&error_label);
+                    }
+                }
+            });
+        }
+    ));
+
     // Zoom handlers
     editor::connect_zoom_handlers(
         &window,
@@ -371,13 +646,13 @@ fn build_ui(app: &Application) {
         &search_entry,
         &web_view,
     );
-    editor::connect_sidebar_activation(&sidebar_list, &buffer, &editor_view);
+    editor::connect_sidebar_activation(&outline_list, &buffer, &editor_view);
 
     // Live preview handler
     webview::connect_live_preview(
         &buffer,
         &web_view,
-        &sidebar_list,
+        &outline_list,
         state.clone(),
         &toast_overlay,
     );
@@ -452,8 +727,9 @@ fn build_ui(app: &Application) {
             // Add to history if not duplicate of last
             {
                 let mut s = state.borrow_mut();
-                if s.ai_history.last() != Some(&user_instruction) {
-                    s.ai_history.push(user_instruction.clone());
+                if s.config.ai_history.last() != Some(&user_instruction) {
+                    s.config.ai_history.push(user_instruction.clone());
+                    let _ = s.config.save();
                 }
             }
 
@@ -739,7 +1015,7 @@ fn build_ui(app: &Application) {
                 let Some(ai_entry) = ai_entry_weak.upgrade() else { return glib::Propagation::Proceed };
                 let ai_buffer = ai_entry.buffer();
                 
-                let history = state.borrow().ai_history.clone();
+                let history = state.borrow().config.ai_history.clone();
                 let mut history_idx = ai_history_index.borrow_mut();
                 match key {
                     gdk::Key::Up if !history.is_empty() => {

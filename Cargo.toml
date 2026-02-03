@@ -1,6 +1,6 @@
 [package]
 name = "latex-rs"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 authors = ["Andres Caicedo <andrezz1997@gmail.com>"]
 description = "A professional, modern LaTeX editor with AI integration and live preview."
@@ -10,7 +10,7 @@ license = "MIT"
 
 [dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
-adw = { package = "libadwaita", version = "0.7" }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 webkit6 = "0.4"
 sourceview5 = "0.9"
 gio = "0.20"
@@ -34,3 +34,5 @@ dirs = "6.0.0"
 toml = "0.9.11"
 async-trait = "0.1.89"
 futures = "0.3.31"
+quick-xml = { version = "0.36", features = ["serialize"] }
+urlencoding = "2.1.3"

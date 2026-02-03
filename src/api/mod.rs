@@ -8,6 +8,7 @@ use std::pin::Pin;
 
 pub mod ollama;
 pub mod openai_compat;
+pub mod arxiv;
 
 use crate::api::ollama::OllamaProvider;
 use crate::api::openai_compat::OpenAiCompatibleProvider;

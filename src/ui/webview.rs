@@ -59,13 +59,14 @@ pub fn connect_live_preview(
         let queue = queue.clone();
         let web_view = web_view.clone();
         let sidebar_list = sidebar_list.clone();
-        let _state = state.clone();
+        let state = state.clone();
         let _toast_overlay = toast_overlay.clone();
         let text_for_enqueue = text.clone();
         let text_for_sections = text.clone();
 
         glib::MainContext::default().spawn_local(async move {
-            match queue.enqueue(text_for_enqueue).await {
+            let dark_mode = state.borrow().config.preview_dark_mode;
+            match queue.enqueue(text_for_enqueue, dark_mode).await {
                 Some(html) => {
                     web_view.load_html(&html, None::<&str>);
 

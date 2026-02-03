@@ -18,16 +18,36 @@ pub fn show_settings(
         .build();
 
     let page = PreferencesPage::new();
-    page.set_title("AI Configuration");
-    page.set_icon_name(Some("starred-symbolic"));
+    page.set_title("General");
+    page.set_icon_name(Some("preferences-system-symbolic"));
     window.add(&page);
+
+    let general_group = PreferencesGroup::new();
+    general_group.set_title("Appearance");
+    page.add(&general_group);
+
+    let dark_mode_row = ActionRow::builder()
+        .title("Preview True Dark Mode")
+        .subtitle("Invert LaTeX preview colors in dark mode")
+        .build();
+    let dark_mode_switch = gtk4::Switch::builder()
+        .valign(gtk4::Align::Center)
+        .active(state.borrow().config.preview_dark_mode)
+        .build();
+    dark_mode_row.add_suffix(&dark_mode_switch);
+    general_group.add(&dark_mode_row);
+
+    let page_ai = PreferencesPage::new();
+    page_ai.set_title("AI Configuration");
+    page_ai.set_icon_name(Some("starred-symbolic"));
+    window.add(&page_ai);
 
     let group = PreferencesGroup::new();
     group.set_title("Provider Settings");
     group.set_description(Some(
         "Configure your AI backends (Ollama, OpenAI, DeepSeek)",
     ));
-    page.add(&group);
+    page_ai.add(&group);
 
     let config = state.borrow().config.clone();
     let provider_names: Vec<String> = config.providers.iter().map(|p| p.name.clone()).collect();
@@ -169,9 +189,13 @@ pub fn show_settings(
         model_entry,
         #[strong]
         prompt_entry,
+        #[strong]
+        dark_mode_switch,
         move |_| {
             let mut s = state.borrow_mut();
             let selected = provider_dropdown.selected();
+
+            s.config.preview_dark_mode = dark_mode_switch.is_active();
 
             let config_clone = s.config.clone();
             if let Some(p_name) = config_clone

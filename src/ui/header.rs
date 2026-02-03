@@ -3,7 +3,9 @@ use gtk4::prelude::{BoxExt, WidgetExt};
 use gtk4::{Box, Button, Orientation, ToggleButton};
 
 /// Creates the application header bar containing file operations and AI/Sidebar toggles.
-pub fn create_header_bar() -> (
+pub fn create_header_bar(
+    sidebar_stack: &adw::ViewStack,
+) -> (
     HeaderBar,
     WindowTitle,
     Button,
@@ -16,7 +18,15 @@ pub fn create_header_bar() -> (
 ) {
     let header_bar = HeaderBar::new();
     let view_title = WindowTitle::new("LaTeX.rs Editor", "");
-    header_bar.set_title_widget(Some(&view_title));
+
+    let switcher = adw::ViewSwitcher::builder()
+        .stack(sidebar_stack)
+        .policy(adw::ViewSwitcherPolicy::Narrow)
+        .build();
+
+    // Use a box to hold both title and switcher if needed,
+    // but HIG suggests switcher in the middle for this kind of app.
+    header_bar.set_title_widget(Some(&switcher));
 
     // Left actions group
     let left_box = Box::new(Orientation::Horizontal, 0);

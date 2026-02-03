@@ -80,7 +80,7 @@ pub fn create_editor(style_manager: &StyleManager) -> (Buffer, View, ScrolledWin
 }
 
 /// Creates a search bar with a `Revealer` and a `SearchEntry`.
-pub fn create_search_bar() -> (Revealer, SearchEntry) {
+pub fn create_search_bar() -> (Revealer, SearchEntry, gtk4::Label) {
     let search_revealer = Revealer::builder()
         .transition_type(RevealerTransitionType::SlideDown)
         .build();
@@ -88,14 +88,20 @@ pub fn create_search_bar() -> (Revealer, SearchEntry) {
         .hexpand(true)
         .placeholder_text("Search document...")
         .build();
+    let count_label = gtk4::Label::builder()
+        .label("0 matches")
+        .css_classes(["dim-label"])
+        .build();
+
     let search_box = Box::new(Orientation::Horizontal, 6);
     search_box.set_margin_start(12);
     search_box.set_margin_end(12);
     search_box.set_margin_top(6);
     search_box.set_margin_bottom(6);
     search_box.append(&search_entry);
+    search_box.append(&count_label);
     search_revealer.set_child(Some(&search_box));
-    (search_revealer, search_entry)
+    (search_revealer, search_entry, count_label)
 }
 /// Connects zoom handlers for keyboard shortcuts (Ctrl+Plus/Minus/0) and mouse scroll.
 /// Also handles document search shortcuts (Ctrl+F, Escape).
