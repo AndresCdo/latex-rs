@@ -44,9 +44,11 @@ pub fn show_settings(
         #[strong]
         on_config_changed,
         move |sw| {
-            let mut s = state.borrow_mut();
-            s.config.preview_dark_mode = sw.is_active();
-            let _ = s.config.save();
+            {
+                let mut s = state.borrow_mut();
+                s.config.preview_dark_mode = sw.is_active();
+                let _ = s.config.save();
+            }
             if let Some(on_changed) = &on_config_changed {
                 on_changed();
             }
@@ -208,37 +210,39 @@ pub fn show_settings(
         #[strong]
         dark_mode_switch,
         move |_| {
-            let mut s = state.borrow_mut();
-            let selected = provider_dropdown.selected();
-
-            s.config.preview_dark_mode = dark_mode_switch.is_active();
-
-            let config_clone = s.config.clone();
-            if let Some(p_name) = config_clone
-                .providers
-                .get(selected as usize)
-                .map(|p| p.name.clone())
             {
-                s.config.active_provider = p_name;
-            }
+                let mut s = state.borrow_mut();
+                let selected = provider_dropdown.selected();
 
-            if let Some(p) = s.config.providers.get_mut(selected as usize) {
-                let key = api_key_entry.text().to_string();
-                p.api_key = if key.is_empty() { None } else { Some(key) };
-                p.base_url = url_entry.text().to_string();
-                p.active_model = model_entry.text().to_string();
-                let prompt = prompt_entry.text().to_string();
-                p.system_prompt = if prompt.is_empty() {
-                    None
-                } else {
-                    Some(prompt)
-                };
-            }
+                s.config.preview_dark_mode = dark_mode_switch.is_active();
 
-            let _ = s.config.save();
+                let config_clone = s.config.clone();
+                if let Some(p_name) = config_clone
+                    .providers
+                    .get(selected as usize)
+                    .map(|p| p.name.clone())
+                {
+                    s.config.active_provider = p_name;
+                }
 
-            if let Some(p_config) = s.config.get_active_provider() {
-                s.ai_provider = Some(crate::api::create_provider(p_config));
+                if let Some(p) = s.config.providers.get_mut(selected as usize) {
+                    let key = api_key_entry.text().to_string();
+                    p.api_key = if key.is_empty() { None } else { Some(key) };
+                    p.base_url = url_entry.text().to_string();
+                    p.active_model = model_entry.text().to_string();
+                    let prompt = prompt_entry.text().to_string();
+                    p.system_prompt = if prompt.is_empty() {
+                        None
+                    } else {
+                        Some(prompt)
+                    };
+                }
+
+                let _ = s.config.save();
+
+                if let Some(p_config) = s.config.get_active_provider() {
+                    s.ai_provider = Some(crate::api::create_provider(p_config));
+                }
             }
 
             if let Some(on_closed) = &on_settings_closed {
