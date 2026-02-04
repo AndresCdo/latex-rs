@@ -35,6 +35,31 @@ Thumbs.db
 # Ignore log files
 *.log
 
+# LaTeX auxiliary files
+*.aux
+*.fdb_latexmk
+*.fls
+*.gz
+*.toc
+*.out
+*.nav
+*.snm
+*.vrb
+*.synctex.gz
+*.bbl
+*.blg
+*.lof
+*.lot
+*.run.xml
+*.bcf
+
+# LaTeX output
+*.pdf
+
+# Preview artifacts
+*.svg
+output-*.svg
+
 # Ignore coverage files
 coverage/
 *.lcov
