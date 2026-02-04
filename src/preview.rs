@@ -1,6 +1,4 @@
-use crate::constants::{
-    COMPILE_TIMEOUT_SECS, FS_FLUSH_DELAY_MS, MAX_LATEX_SIZE_BYTES, PROCESS_POLL_INTERVAL_MS,
-};
+use crate::constants::{COMPILE_TIMEOUT_SECS, MAX_LATEX_SIZE_BYTES, PROCESS_POLL_INTERVAL_MS};
 use horrorshow::helper::doctype;
 use horrorshow::{html, Raw};
 use html_escape::encode_text;
@@ -165,6 +163,24 @@ impl Preview {
         Ok(())
     }
 
+    fn get_pdf_page_count(&self, pdf_path: &std::path::Path) -> usize {
+        let mut cmd = Command::new("pdfinfo");
+        cmd.arg(pdf_path);
+        if let Ok(output) = cmd.output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.starts_with("Pages:") {
+                    return line
+                        .split_whitespace()
+                        .last()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1);
+                }
+            }
+        }
+        1
+    }
+
     fn compile_latex(&self, latex: &str) -> Result<Vec<String>, String> {
         // Security: Validate input size to prevent DoS
         if latex.len() > MAX_LATEX_SIZE_BYTES {
@@ -270,67 +286,46 @@ impl Preview {
         }
 
         let pdf_path = dir.path().join("doc.pdf");
-
-        // Convert PDF to SVG using pdftocairo
-        let mut cmd = Command::new("pdftocairo");
-        cmd.arg("-svg")
-            .arg(&pdf_path)
-            .arg(dir.path().join("output"));
-        let cairo_output =
-            Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS).map_err(|e| {
-                Self::sanitize_paths(
-                    &format!(
-                        "Failed to run pdftocairo: {}. Is poppler-utils installed?",
-                        e
-                    ),
-                    &temp_dir_path,
-                    &input_path_str,
-                )
-            })?;
-
-        let cairo_stderr = String::from_utf8_lossy(&cairo_output.stderr);
-        if !cairo_output.status.success() {
-            let cairo_stderr_sanitized =
-                Self::sanitize_paths(&cairo_stderr, &temp_dir_path, &input_path_str);
-            return Err(format!(
-                "pdftocairo failed to convert PDF to SVG.\n\nStderr:\n{}",
-                cairo_stderr_sanitized
-            ));
-        }
-
-        // Wait a small bit for files to be flushed to disk
-        std::thread::sleep(std::time::Duration::from_millis(FS_FLUSH_DELAY_MS));
-
+        let page_count = self.get_pdf_page_count(&pdf_path);
         let mut svgs = Vec::new();
-        let paths = fs::read_dir(dir.path()).map_err(|e| {
-            Self::sanitize_paths(
-                &format!("Failed to read temp dir: {}", e),
-                &temp_dir_path,
-                &input_path_str,
-            )
-        })?;
-        let mut svg_paths: Vec<_> = paths
-            .filter_map(|p| p.ok())
-            .filter(|p| {
-                let name = p.file_name().to_string_lossy().to_string();
-                name.starts_with("output") && name.ends_with(".svg")
-            })
-            .collect();
 
-        svg_paths.sort_by_key(|p| {
-            let name = p.file_name().to_string_lossy().to_string();
-            if name == "output.svg" {
-                0
-            } else {
-                name.trim_start_matches("output-")
-                    .trim_end_matches(".svg")
-                    .parse()
-                    .unwrap_or(0)
+        // Convert PDF to SVG page by page
+        for page in 1..=page_count {
+            let svg_filename = format!("output-{}.svg", page);
+            let svg_path = dir.path().join(&svg_filename);
+
+            let mut cmd = Command::new("pdftocairo");
+            cmd.arg("-svg")
+                .arg("-f")
+                .arg(page.to_string())
+                .arg("-l")
+                .arg(page.to_string())
+                .arg(&pdf_path)
+                .arg(&svg_path);
+
+            let cairo_output = Self::run_command_with_timeout(&mut cmd, COMPILE_TIMEOUT_SECS)
+                .map_err(|e| {
+                    Self::sanitize_paths(
+                        &format!(
+                            "Failed to run pdftocairo for page {}: {}. Is poppler-utils installed?",
+                            page, e
+                        ),
+                        &temp_dir_path,
+                        &input_path_str,
+                    )
+                })?;
+
+            if !cairo_output.status.success() {
+                let cairo_stderr = String::from_utf8_lossy(&cairo_output.stderr);
+                let cairo_stderr_sanitized =
+                    Self::sanitize_paths(&cairo_stderr, &temp_dir_path, &input_path_str);
+                return Err(format!(
+                    "pdftocairo failed to convert page {} to SVG.\n\nStderr:\n{}",
+                    page, cairo_stderr_sanitized
+                ));
             }
-        });
 
-        for entry in svg_paths {
-            if let Ok(content) = fs::read_to_string(entry.path()) {
+            if let Ok(content) = fs::read_to_string(&svg_path) {
                 svgs.push(content);
             }
         }
@@ -340,8 +335,8 @@ impl Preview {
             let log =
                 fs::read_to_string(log_path).unwrap_or_else(|_| "No log file found".to_string());
             return Err(format!(
-                "No SVG pages were generated.\n\n--- LOG ---\n{}",
-                log
+                "No SVG pages were generated (Page count was {}).\n\n--- LOG ---\n{}",
+                page_count, log
             ));
         }
 
@@ -458,5 +453,25 @@ mod tests {
         let text = "Error in /tmp/xyz123/doc.tex: missing package";
         let sanitized = Preview::sanitize_paths(text, temp_dir, input_path);
         assert_eq!(sanitized, "Error in [TEMP_DIR]/doc.tex: missing package");
+    }
+
+    #[test]
+    fn test_render_multi_page() {
+        let preview = Preview::new();
+        let latex = r#"
+\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+Page 1
+\newpage
+Page 2
+\includegraphics{missing_image.png}
+\end{document}
+"#;
+        let result = preview.render(latex, false);
+        assert!(result.contains("class=\"page\""));
+        assert!(result.contains("<svg"));
+        let page_count = result.matches("class=\"page\"").count();
+        assert_eq!(page_count, 2);
     }
 }

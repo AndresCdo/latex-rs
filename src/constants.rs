@@ -45,10 +45,6 @@ pub const COMPILE_TIMEOUT_SECS: u64 = 30;
 /// Balances responsiveness vs CPU usage.
 pub const PROCESS_POLL_INTERVAL_MS: u64 = 100;
 
-/// Small delay to allow filesystem to flush SVG files (milliseconds).
-/// Addresses rare timing issues on some filesystems.
-pub const FS_FLUSH_DELAY_MS: u64 = 10;
-
 // ============================================================================
 // Compilation Queue
 // ============================================================================

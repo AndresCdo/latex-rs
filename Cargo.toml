@@ -1,6 +1,6 @@
 [package]
 name = "latex-rs"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 authors = ["Andres Caicedo <andrezz1997@gmail.com>"]
 description = "A professional, modern LaTeX editor with AI integration and live preview."

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-02-03
+
+### Fixed
+- **SVG Generation**: Fixed "No SVG pages were generated" error by implementing page-by-page PDF-to-SVG conversion.
+- **Robustness**: Improved resilience against non-fatal LaTeX warnings (e.g., missing images) which previously blocked preview generation.
+- **Compatibility**: Explicitly handle `pdftocairo` behavior variations across different system versions.
+
 ## [1.5.0] - 2026-02-03
 
 ### Added
@@ -51,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-time LaTeX preview via `pdflatex`.
 - Local AI integration via Ollama.
 
+[1.5.1]: https://github.com/AndresCdo/latex-rs/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/AndresCdo/latex-rs/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/AndresCdo/latex-rs/compare/v1.1.0...v1.4.0
 [1.1.0]: https://github.com/AndresCdo/latex-rs/compare/v1.0.0...v1.1.0
