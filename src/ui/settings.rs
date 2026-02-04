@@ -9,6 +9,7 @@ pub fn show_settings(
     parent: &gtk4::Window,
     state: Rc<RefCell<AppState>>,
     on_settings_closed: Option<Rc<dyn Fn()>>,
+    on_config_changed: Option<Rc<dyn Fn()>>,
 ) {
     let window = PreferencesWindow::builder()
         .transient_for(parent)
@@ -36,6 +37,21 @@ pub fn show_settings(
         .build();
     dark_mode_row.add_suffix(&dark_mode_switch);
     general_group.add(&dark_mode_row);
+
+    dark_mode_switch.connect_active_notify(glib::clone!(
+        #[strong]
+        state,
+        #[strong]
+        on_config_changed,
+        move |sw| {
+            let mut s = state.borrow_mut();
+            s.config.preview_dark_mode = sw.is_active();
+            let _ = s.config.save();
+            if let Some(on_changed) = &on_config_changed {
+                on_changed();
+            }
+        }
+    ));
 
     let page_ai = PreferencesPage::new();
     page_ai.set_title("AI Configuration");

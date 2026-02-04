@@ -1,6 +1,6 @@
 use crate::api::AiProvider;
 use crate::config::AppConfig;
-use crate::preview::Preview;
+use crate::queue::CompilationQueue;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -21,8 +21,8 @@ pub struct AppState {
     pub original_text_selection: Option<String>,
     /// Application configuration.
     pub config: AppConfig,
-    /// LaTeX preview generator.
-    pub preview_generator: Preview,
+    /// Compilation queue.
+    pub compilation_queue: Option<CompilationQueue>,
     /// Current zoom level for the text editor.
     pub editor_zoom: f64,
     /// Current zoom level for the preview pane.

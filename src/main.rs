@@ -290,6 +290,8 @@ fn build_ui(app: &Application) {
     ));
 
     let config = AppConfig::load();
+    let preview_generator = Preview::new();
+    let compilation_queue = crate::queue::CompilationQueue::new(preview_generator.clone());
 
     let state = Rc::new(RefCell::new(AppState {
         current_file: None,
@@ -299,7 +301,7 @@ fn build_ui(app: &Application) {
         pending_suggestion: None,
         original_text_selection: None,
         config,
-        preview_generator: Preview::new(),
+        compilation_queue: Some(compilation_queue),
         editor_zoom: DEFAULT_ZOOM_LEVEL,
         preview_zoom: DEFAULT_ZOOM_LEVEL,
     }));
@@ -697,8 +699,30 @@ fn build_ui(app: &Application) {
         window,
         #[strong]
         validate_ai,
+        #[weak]
+        buffer,
+        #[weak]
+        web_view,
+        #[weak]
+        outline_list,
         move |_| {
-            crate::ui::settings::show_settings(window.upcast_ref(), state.clone(), Some(validate_ai.clone()));
+            let refresh_preview = {
+                let buffer = buffer.downgrade();
+                let web_view = web_view.downgrade();
+                let outline_list = outline_list.downgrade();
+                let state = state.clone();
+                Rc::new(move || {
+                    if let (Some(b), Some(wv), Some(ol)) = (buffer.upgrade(), web_view.upgrade(), outline_list.upgrade()) {
+                        crate::ui::webview::trigger_refresh(&b, &wv, &ol, state.clone());
+                    }
+                })
+            };
+            crate::ui::settings::show_settings(
+                window.upcast_ref(), 
+                state.clone(), 
+                Some(validate_ai.clone()),
+                Some(refresh_preview)
+            );
         }
     ));
 

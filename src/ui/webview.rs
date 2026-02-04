@@ -1,4 +1,3 @@
-use crate::queue::CompilationQueue;
 use crate::state::AppState;
 use crate::utils::buffer_to_string;
 use adw::ToastOverlay;
@@ -26,6 +25,58 @@ pub fn create_preview() -> (WebView, ScrolledWindow) {
     (web_view, preview_scroll)
 }
 
+/// Triggers a refresh of the LaTeX preview by enqueuing a compilation job.
+pub fn trigger_refresh(
+    buffer: &Buffer,
+    web_view: &WebView,
+    sidebar_list: &ListBox,
+    state: Rc<RefCell<AppState>>,
+) {
+    let state_borrow = state.borrow();
+    let queue = match &state_borrow.compilation_queue {
+        Some(q) => q.clone(),
+        None => return,
+    };
+
+    let text = buffer_to_string(buffer.upcast_ref());
+    if text.trim().is_empty() {
+        web_view.load_html("", None::<&str>);
+        return;
+    }
+
+    let web_view = web_view.clone();
+    let sidebar_list = sidebar_list.clone();
+    let state = state.clone();
+    let text_for_enqueue = text.clone();
+    let text_for_sections = text.clone();
+
+    glib::MainContext::default().spawn_local(async move {
+        let dark_mode = state.borrow().config.preview_dark_mode;
+        match queue.enqueue(text_for_enqueue, dark_mode).await {
+            Some(html) => {
+                web_view.load_html(&html, None::<&str>);
+
+                let sections = crate::utils::extract_sections(&text_for_sections);
+                sidebar_list.remove_all();
+                for (title_with_prefix, _line) in sections {
+                    let row = gtk4::ListBoxRow::new();
+                    let label = gtk4::Label::new(Some(&title_with_prefix));
+                    label.set_xalign(0.0);
+                    let prefix_spaces =
+                        title_with_prefix.len() - title_with_prefix.trim_start().len();
+                    let level = prefix_spaces / 2;
+                    label.set_margin_start((level * 12) as i32);
+                    row.set_child(Some(&label));
+                    sidebar_list.append(&row);
+                }
+            }
+            None => {
+                tracing::debug!("Compilation queue full, request dropped");
+            }
+        }
+    });
+}
+
 /// Connects the editor buffer change signal to the live preview compilation queue.
 /// Also updates the sidebar outline when the document structure changes.
 pub fn connect_live_preview(
@@ -33,61 +84,18 @@ pub fn connect_live_preview(
     web_view: &WebView,
     sidebar_list: &ListBox,
     state: Rc<RefCell<AppState>>,
-    toast_overlay: &ToastOverlay,
+    _toast_overlay: &ToastOverlay,
 ) {
-    let preview = state.borrow().preview_generator.clone();
-    let queue = CompilationQueue::new(preview);
-
     let web_view = web_view.clone();
     let sidebar_list = sidebar_list.clone();
     let state = state.clone();
-    let toast_overlay = toast_overlay.clone();
 
-    let state_for_changed = state.clone();
     buffer.connect_changed(move |buf| {
         // Skip preview update if AI is currently generating text
-        if state_for_changed.borrow().is_ai_generating {
+        if state.borrow().is_ai_generating {
             return;
         }
 
-        let text = buffer_to_string(buf.upcast_ref());
-        if text.trim().is_empty() {
-            web_view.load_html("", None::<&str>);
-            return;
-        }
-
-        let queue = queue.clone();
-        let web_view = web_view.clone();
-        let sidebar_list = sidebar_list.clone();
-        let state = state.clone();
-        let _toast_overlay = toast_overlay.clone();
-        let text_for_enqueue = text.clone();
-        let text_for_sections = text.clone();
-
-        glib::MainContext::default().spawn_local(async move {
-            let dark_mode = state.borrow().config.preview_dark_mode;
-            match queue.enqueue(text_for_enqueue, dark_mode).await {
-                Some(html) => {
-                    web_view.load_html(&html, None::<&str>);
-
-                    let sections = crate::utils::extract_sections(&text_for_sections);
-                    sidebar_list.remove_all();
-                    for (title_with_prefix, _line) in sections {
-                        let row = gtk4::ListBoxRow::new();
-                        let label = gtk4::Label::new(Some(&title_with_prefix));
-                        label.set_xalign(0.0);
-                        let prefix_spaces =
-                            title_with_prefix.len() - title_with_prefix.trim_start().len();
-                        let level = prefix_spaces / 2;
-                        label.set_margin_start((level * 12) as i32);
-                        row.set_child(Some(&label));
-                        sidebar_list.append(&row);
-                    }
-                }
-                None => {
-                    tracing::debug!("Compilation queue full, request dropped");
-                }
-            }
-        });
+        trigger_refresh(buf, &web_view, &sidebar_list, state.clone());
     });
 }
